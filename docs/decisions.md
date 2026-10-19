@@ -63,3 +63,19 @@ taken by Adelson; the rest are proposals he can veto.
 | D18 | The Portuguese translation of the codebook is written in M6, after the pilot revisions. | Translate once, not after every prompt change. | translating now |
 | D19 | References in the codebook header: full book reference of Michaels & O'Connor and the JCAL author list are marked "to be confirmed". | Not verifiable from the PDF alone. | guessing |
 | D20 | Coding workbook: README, `transcript`, `messages`, one sheet per goal with a level dropdown. One workbook per group is recommended for coding studies. | Matches the model's output fields. | one long sheet |
+
+### Blind-coder pilot 1 (2 dev chats, codebook as of M2): revisions to the prompts
+
+An agent acting as a human coder applied the codebook to one dyad and one triad without any model output. Its 13 notes led to these prompt changes (the prompt-set hash changes; v1 is not yet released):
+
+| Note | Change |
+|---|---|
+| Interleaved threads were merged into very long patterns, making counts coarse. | Segment by idea: close a pattern at its last evidence unit when another idea starts; a resumed idea is a new pattern that may cite the earlier antecedent. Replaces "code interleaved threads as one pattern". |
+| Several antecedents / several agent units taken up. | Cite the one the first (earliest) evidence unit responds to. |
+| G2 `content_reference` had no level. | Named in level 2. |
+| Talk about the agent or the tool itself. | Listed as non-evidence. |
+| What counts as a press in G3. | Defined: any question asking for a reason, evidence, a prediction or an explanation. |
+| Self-revision prompted by a peer. | Counts as reasoned self-revision when the reason is stated; can also be G4. |
+| G4 add-on without "because"; building further on a peer's addition; triads. | Add-on with new content = level 2; level 3 includes building further; level 4 says "at least two students". |
+| Real first names in agent messages (privacy). | `redact_vocatives=True` (default): words that agents use to address someone are replaced by `[NAME]` in every message of the input (W016). `name_candidates()` lists them for the researcher only. |
+| Some agent-account messages read as if a student wrote them. | Open question for Adelson (data, not codebook). |

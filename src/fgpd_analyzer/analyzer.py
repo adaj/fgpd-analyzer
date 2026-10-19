@@ -11,6 +11,7 @@ import pandas as pd
 from . import codebook as cb
 from .config import AnalyzerConfig, ColumnMap
 from .exceptions import ConfigError, PromptError
+from .io import read_source
 from .pipeline import PreparedInput, prepare_input
 from .prompts.registry import PromptRegistry, PromptTemplate
 from .render import render_transcript
@@ -74,6 +75,20 @@ class FGPDAnalyzer:
         prep = self.prepare(source, columns=columns, **read_kw)
         prep.report.raise_if_errors()
         return prep.messages()
+
+    def name_candidates(self, source: Any, *, columns: Columns = None, **read_kw: Any) -> list[str]:
+        """Words agents use to address someone. For the researcher's eyes only:
+        they may be real names. Never logged or written by the package."""
+        from .preprocess import role_matcher, vocative_names
+        from .validation import check_frame
+
+        raw = read_source(source, **read_kw)
+        _, clean = check_frame(raw, ColumnMap.coerce(columns), self.config)
+        if clean is None:
+            return []
+        is_agent = role_matcher(self.config)
+        rows = clean["username"].astype(str).map(lambda x: bool(is_agent(x)))
+        return sorted(vocative_names(clean.loc[rows, "text"].astype(str).tolist()))
 
     def preview(self, source: Any, *, group: str, columns: Columns = None, **read_kw: Any) -> str:
         """The exact (pseudonymized) transcript that would be sent for `group`."""

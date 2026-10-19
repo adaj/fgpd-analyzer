@@ -470,3 +470,27 @@ def test_dev_file_default_config(dev_data):
     assert p.report.ok and len(p.eligible) == 7
     codes = set(p.report.codes())
     assert {"W003", "W004", "W006", "W009", "W013"} <= codes
+
+
+def test_agent_vocatives_redacted_everywhere():
+    rows = [
+        ("g", "agente 1", "10:00:00", "Rodrigo, você acha que pode ajudar bianca?"),
+        ("g", "agente 1", "10:00:10", "Olá Amorim! Como vão?"),
+        ("g", "agente 1", "10:00:20", "Ótimo, continuem assim"),
+        *[
+            ("g", "A" if i % 2 else "B", f"10:0{i + 1}:00", "a bianca e o rodrigo acham")
+            for i in range(8)
+        ],
+    ]
+    fa = FGPDAnalyzer()
+    p = fa.prepare(make_chat(rows))
+    t = render_transcript(p.groups["g"])
+    for name in ("Rodrigo", "bianca", "Amorim", "rodrigo"):
+        assert name not in t
+    assert "Ótimo" in t and "W016" in p.report.codes()
+    assert "Rodrigo" not in p.report.to_text()
+    assert fa.name_candidates(make_chat(rows)) == ["Amorim", "Rodrigo", "bianca"]
+    t2 = render_transcript(
+        FGPDAnalyzer(redact_vocatives=False).prepare(make_chat(rows)).groups["g"]
+    )
+    assert "Rodrigo" in t2

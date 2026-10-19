@@ -131,6 +131,7 @@ class AnalyzerConfig(BaseModel):
     pseudonymize: bool = True
     extra_names: tuple[str, ...] = Field((), repr=False)
     min_name_len_in_text: int = Field(3, ge=1)
+    redact_vocatives: bool = True
 
     # languages
     chat_language: str | None = None

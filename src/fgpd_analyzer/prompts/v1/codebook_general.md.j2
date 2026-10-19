@@ -29,10 +29,11 @@ A **pattern** of goal Gk is one contiguous stretch of the chat in which students
 
 - **Span.** A pattern has a start unit and an end unit. Start at the first student unit that is evidence for the goal, or at the agent or peer unit that prompts it if that unit is part of the exchange. End at the last evidence unit. The span may include agent units, off-task units and filler.
 - **New pattern.** A new pattern of the same goal begins when (a) the students move to a different idea or question, or (b) {{ pattern_gap_units }} units of any speaker, or more than {{ pattern_gap_min }} minutes, pass without evidence for the goal.
-- **No overlap.** Two patterns of the same goal never overlap, and a unit is evidence for at most one pattern of a goal. If two threads interleave, code them as one pattern.
+- **No overlap.** Two patterns of the same goal never overlap, and a unit is evidence for at most one pattern of a goal.
+- **Interleaved threads.** Segment by idea, not by stretch of chat. When a second idea starts while the first is still being developed, end the first pattern at its last evidence unit before the switch and start a new pattern for the second idea. If the first idea resumes later, that is a new pattern; it may cite the earlier unit as its antecedent. Do not merge different ideas into one long pattern.
 - **Evidence.** The student units that make up the pattern, listed in the order they appear. Agent units are never evidence. Every evidence unit lies between the start and the end.
-- **Antecedent.** The single peer student unit whose content is taken up, when the goal requires one (G2 and G4; optional for G1 and G3). The antecedent belongs to a different student than at least one evidence unit. It may lie before the start of the span, for example when a student says "as you said earlier". It is never an agent unit. The antecedent is never also an evidence unit: it is what is taken up, not the taking up.
-- **Agent uptake.** The agent unit whose question, move or topic the students take up in this pattern, or none. Cite it only if the students' units respond to that agent unit's content. Do not cite an agent unit just because it is nearby. It must come before the last evidence unit.
+- **Antecedent.** The single peer student unit whose content is taken up (if several are taken up, the one that the first evidence unit responds to), when the goal requires one (G2 and G4; optional for G1 and G3). The antecedent belongs to a different student than at least one evidence unit. It may lie before the start of the span, for example when a student says "as you said earlier". It is never an agent unit. The antecedent is never also an evidence unit: it is what is taken up, not the taking up.
+- **Agent uptake.** The agent unit whose question, move or topic the students take up in this pattern, or none. Cite it only if the students' units respond to that agent unit's content. Do not cite an agent unit just because it is nearby. It must come before the last evidence unit. If several agent units are taken up, cite the one that the earliest evidence unit responds to.
 - **Indicators.** One or more indicator codes from the goal's list that are present in the evidence.
 - **Level.** An integer from 1 to 4 taken from the goal's anchor table. Assign the highest level whose conditions are all met. If you are torn between two levels, assign the lower one. A stretch that does not reach level 1 is not a pattern; do not report it.
 - **Justification.** A short justification of at most 40 words, written in {{ justification_language }}, that cites the unit ids that support the level. Use the speakers' pseudonyms (S1, S2, AG1), never real names.
@@ -46,7 +47,7 @@ A **pattern** of goal Gk is one contiguous stretch of the chat in which students
 - Typo corrections (they are already part of the unit).
 - Answers dictated by a peer and then typed in ("type 37").
 - Text pasted from an external source without the student's own framing.
-- Questions to the agent about how to use the interface.
+- Questions to the agent about how to use the interface, and talk about the tool or the agent itself (what it is, what it will do, whether it reads the chat).
 
 Coordination about task content, such as "let's put the temperature on the x-axis", counts as a G1 idea, at most level 2 unless the student gives a reason for it.
 

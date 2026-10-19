@@ -21,6 +21,117 @@ PROMPT_OVERHEAD_TOKENS = 6000
 CHARS_PER_TOKEN = 3.0  # conservative for PT/NL chat text
 
 
+# Words that often open an agent message before a comma but are not names.
+_NOT_NAMES = frozenset(
+    [
+        "ola",
+        "olá",
+        "oi",
+        "ei",
+        "opa",
+        "ok",
+        "okay",
+        "certo",
+        "otimo",
+        "ótimo",
+        "muito",
+        "bem",
+        "bom",
+        "boa",
+        "legal",
+        "entao",
+        "então",
+        "pessoal",
+        "gente",
+        "galera",
+        "turma",
+        "sim",
+        "nao",
+        "não",
+        "agora",
+        "parabens",
+        "parabéns",
+        "obrigado",
+        "obrigada",
+        "perfeito",
+        "exato",
+        "interessante",
+        "verdade",
+        "claro",
+        "beleza",
+        "show",
+        "vamos",
+        "isso",
+        "você",
+        "vocês",
+        "voce",
+        "voces",
+        "vcs",
+        "todos",
+        "todas",
+        "ele",
+        "ela",
+        "eles",
+        "elas",
+        "alguem",
+        "alguém",
+        "hello",
+        "hi",
+        "hey",
+        "great",
+        "good",
+        "well",
+        "so",
+        "yes",
+        "no",
+        "now",
+        "thanks",
+        "perfect",
+        "exactly",
+        "interesting",
+        "true",
+        "sure",
+        "right",
+        "everyone",
+        "guys",
+        "team",
+        "nice",
+        "also",
+        "and",
+        "but",
+        "hmm",
+        "you",
+        "them",
+        "him",
+        "her",
+        "someone",
+    ]
+)
+_VOCATIVE_RX = (
+    re.compile(r"^\s*([^\W\d_]{3,})\s*,\s", re.UNICODE),
+    re.compile(r"^\s*(?:ol[aá]|oi|ei|hey|hi|hello)[\s,!]+([^\W\d_]{3,})\b", re.IGNORECASE),
+    re.compile(r",\s*([^\W\d_]{3,})\s*[?!]\s*$", re.UNICODE),
+    re.compile(
+        r"\b(?:ajudar|ajude|perguntar\s+(?:a|ao|à)|pergunte\s+(?:a|ao|à)|help|ask)\s+"
+        r"([^\W\d_]{3,})\s*[?!.,]",
+        re.IGNORECASE,
+    ),
+)
+
+
+def vocative_names(agent_texts: list[str]) -> set[str]:
+    """Words that agent messages use to address someone ("Ana, what do you think?").
+    In exports where usernames were replaced by letters, these are often real names."""
+    found: set[str] = set()
+    for t in agent_texts:
+        for rx in _VOCATIVE_RX:
+            for m in rx.finditer(t):
+                w = m.group(1)
+                if w.lower() not in _NOT_NAMES:
+                    found.add(w)
+    return found
+
+
 def role_matcher(config: AnalyzerConfig):  # type: ignore[no-untyped-def]
     pats = (config.agent_pattern, *config.extra_agent_patterns)
     if config.agent_pattern_regex:
@@ -256,6 +367,20 @@ def prepare(
     names = clean["username"].astype(str).unique()
     agent_names = [n for n in names if is_agent_fn(n)]
     student_names = tuple(n for n in names if not is_agent_fn(n))
+    vocatives: tuple[str, ...] = ()
+    if config.redact_vocatives:
+        agent_rows = clean["username"].astype(str).map(lambda u: bool(is_agent_fn(u)))
+        found = vocative_names(clean.loc[agent_rows, "text"].astype(str).tolist())
+        vocatives = tuple(sorted(found))
+        if vocatives:
+            report.add(
+                "W016",
+                "warning",
+                f"{len(vocatives)} word(s) used by agents to address someone were replaced by "
+                "[NAME] in all messages",
+                hint="inspect them locally with FGPDAnalyzer.name_candidates(); add other known "
+                "names with extra_names",
+            )
     if not agent_names:
         report.add(
             "W008",
@@ -281,7 +406,7 @@ def prepare(
                 f"agent pattern matches {n_ag} of {len(users)} usernames",
                 group=str(g),
             )
-        others = tuple(n for n in student_names if n not in set(users))
+        others = tuple(n for n in student_names if n not in set(users)) + vocatives
         groups[str(g)] = prepare_group(str(g), sub, config, report, other_names=others)
     rows = [
         {
