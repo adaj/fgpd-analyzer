@@ -286,6 +286,7 @@ async def run_analysis(
     consensus: list[ConsensusPattern] = []
     unstable: list[ConsensusPattern] = []
     stability: dict[str, Any] = {}
+    consensus_qc: dict[str, dict[str, int]] = {}
     for goal in config.goals:
         tables = []
         for g in groups:
@@ -295,6 +296,8 @@ async def run_analysis(
             )
             consensus += res.consensus
             unstable += res.unstable
+            if res.qc.counts:
+                consensus_qc[f"{g}:{goal}"] = dict(res.qc.counts)
             if len(runs) == config.n_runs and config.n_runs > 1:
                 tables.append(membership_table(runs, prep.groups[g]))
         k = (
@@ -394,6 +397,8 @@ async def run_analysis(
         "cost_usd": round(total_cost, 6) if cost_known else None,
         "price_table_version": PRICE_TABLE_VERSION,
         "qc": qc_counts,
+        "consensus_qc": consensus_qc,
+        "no_dispersion": config.n_runs == 1,
         "stability": stability,
         "groups": {g: pg.eligibility for g, pg in prep.groups.items()},
         "n_calls": len(results),
@@ -405,7 +410,7 @@ async def run_analysis(
         "info": prep.report.info.to_dict(orient="records"),
     }
     units = pd.concat([_units_table(pg) for pg in prep.groups.values()], ignore_index=True)
-    return FGPDResults(
+    results_obj = FGPDResults(
         units=units,
         groups=pd.DataFrame(groups_rows),
         calls=pd.DataFrame(
@@ -433,6 +438,17 @@ async def run_analysis(
         influence_rule=config.influence_rule,
         goals=config.goals,
     )
+    from .results import group_goal_status
+
+    st = group_goal_status(results_obj.calls, results_obj.groups, config.goals)
+    meta["groups"] = {
+        g: {"eligibility": pg.eligibility, "status": {goal: st[(g, goal)] for goal in config.goals}}
+        for g, pg in prep.groups.items()
+    }
+    results_obj._pseudonym_map = {
+        g: dict(pg.pseudonymizer.mapping) for g, pg in prep.groups.items()
+    }
+    return results_obj
 
 
 def sha256_of_source(source: Any) -> str:

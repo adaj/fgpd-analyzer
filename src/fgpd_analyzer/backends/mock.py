@@ -136,6 +136,9 @@ class ReplayBackend:
             items = list(records)
         self._by_key = {r["cache_key"]: r["response"] for r in items}
 
+    def has(self, key: str) -> bool:
+        return key in self._by_key
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         try:
             return LLMResponse.from_dict(self._by_key[request.cache_key])

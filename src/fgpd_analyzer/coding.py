@@ -126,7 +126,7 @@ def read_coding_sheet(path: Path) -> pd.DataFrame:
     for goal in GOALS:
         df = pd.read_excel(path, sheet_name=goal, dtype=str, header=2)
         df = df.dropna(how="all")
-        for _, r in df.iterrows():
+        for idx, r in df.iterrows():
             ind = [
                 s.strip()
                 for s in re.split(r"[,;\s]+", str(r.get("indicators") or ""))
@@ -136,8 +136,8 @@ def read_coding_sheet(path: Path) -> pd.DataFrame:
             out.append(
                 {
                     "group": r.get("group")
-                    if "group" in df.columns
-                    else (groups[0] if groups else None),
+                    if "group" in df.columns and isinstance(r.get("group"), str)
+                    else (groups[0] if len(groups) == 1 else None),
                     "goal": goal,
                     "start_id": _first(r.get("start_id")),
                     "end_id": _first(r.get("end_id")),
@@ -150,6 +150,7 @@ def read_coding_sheet(path: Path) -> pd.DataFrame:
                     if pd.isna(r.get("justification"))
                     else str(r.get("justification")),
                     "coder": meta.get("coder") or "",
+                    "sheet_row": int(idx) + 4,  # header on row 3 of the goal sheet
                 }
             )
     return pd.DataFrame(out)
@@ -162,12 +163,20 @@ def check_coding_sheet(prep: PreparedInput, path: Path) -> pd.DataFrame:
 
     coded = read_coding_sheet(path)
     rows = []
-    for (group, goal), df in coded.groupby(["group", "goal"], sort=False):
+    for (group, goal), df in coded.groupby(["group", "goal"], sort=False, dropna=False):
         df = df[df["level"].notna() | df["start_id"].notna()]
         if df.empty:
             continue
-        if group not in prep.groups:
-            rows.append({"group": group, "goal": goal, "row": None, "problems": "unknown group"})
+        if not isinstance(group, str) or group not in prep.groups:
+            for sr in df["sheet_row"]:
+                rows.append(
+                    {
+                        "group": group,
+                        "goal": goal,
+                        "row": int(sr),
+                        "problems": "missing or unknown group",
+                    }
+                )
             continue
         raw = df[
             [
@@ -184,9 +193,14 @@ def check_coding_sheet(prep: PreparedInput, path: Path) -> pd.DataFrame:
         pats, _ = validate_patterns(
             raw, prep.groups[group], str(goal), 0, source="human", qc=QC(), apply=False
         )
-        for i, p in enumerate(pats):
+        for sr, p in zip(df["sheet_row"], pats, strict=True):
             if p.qc_flags:
                 rows.append(
-                    {"group": group, "goal": goal, "row": i + 1, "problems": ", ".join(p.qc_flags)}
+                    {
+                        "group": group,
+                        "goal": goal,
+                        "row": int(sr),
+                        "problems": ", ".join(p.qc_flags),
+                    }
                 )
     return pd.DataFrame(rows, columns=["group", "goal", "row", "problems"])

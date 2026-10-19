@@ -124,3 +124,24 @@ API facts re-checked against platform.claude.com on 2026-10-19: `output_config.f
 | D33 | Cost estimate: one cache write per chat, cache reads for the other 4·n_runs − 1 calls, 1,500–4,000 output tokens per call. Dev set (6 groups, 3 runs): about $0.10 (range $0.07–$0.16). | Output (mostly thinking) dominates. | — |
 | D34 | The CLI exits 0 ok, 2 validation errors, 3 backend failure (every call failed), 4 partial (some calls failed) or problems found by `coding-sheet check`. | DESIGN §7. | — |
 | D35 | Golden replay files from real responses are recorded in M5 (they need real model output); M4 covers the same invariants with the mock backend and property tests. | No real responses exist yet. | synthetic "golden" files |
+
+### M4 audit (independent reviewer): 1 blocker, 4 major and 7 minor findings
+
+| # | Finding | Fix |
+|---|---|---|
+| R22 (blocker) | CSV results loaded ids such as `007`, `NA` and `001` as numbers or NaN. | CSV is read as text; known numeric, boolean and time columns are cast explicitly. Round-trip test with those ids. |
+| R23 (major) | Groups not passed to `analyze(groups=...)` were reported as `failed`. | New status `not_selected` (NA metrics). |
+| R24 (major) | A run that needed the string-id schema fallback could not be replayed, and paid for a failing call on every rerun. | The runner goes straight to the fallback when its response is cached or recorded; failing attempts are counted. |
+| R25 (major) | With an even number of runs, the lower-median span could exclude shared evidence, and the pattern vanished without trace. | The consensus span is widened to cover the consensus evidence; any cluster dropped during consensus validation is kept as unstable (`dropped_in_consensus`) and counted in `run_metadata.consensus_qc`. |
+| R26 (major) | `fgpd influence` on parquet results wrote CSV and left stale files; a bad rule crashed. | Keeps the directory's format and regenerates every existing `timeseries_*` file; errors exit 2. |
+| R27 | `no_dispersion` was never flagged for `n_runs=1`. | Flag on every consensus pattern and in metadata. |
+| R28 | One antecedent out of three members won the consensus for G1/G3. | Optional antecedents need a strict majority; required ones (G2, G4) take the most cited. |
+| R29 | Fleiss' kappa returned 1.0 when no unit was ever coded. | Returns None (undefined). |
+| R30 | Dtypes differed from §10. | Categories for goal, label, status, influence and position; Int8 levels; Int32 counts in the time series; `n_runs_ok = 0` for failed or refused. |
+| R31 | Missing API/CLI pieces. | `save(include_pseudonym_map=True)` (in memory only, with a PrivacyWarning); per-group statuses in metadata; `analyze --group/--cache/--cache-dir`; `cache * --cache-dir`; configuration errors exit 2; no eligible group exits 2; empty time series keep their columns. |
+| R32 | `coding-sheet check` reported pattern numbers, not spreadsheet rows, and skipped rows without a group. | Reports spreadsheet rows; a missing group is reported (filled automatically when the workbook has one group). |
+| R33 | An unexpected error dropped the usage of earlier attempts. | Usage is kept. |
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D36 | `FGPD_*` environment variables and `fgpd.toml` (DESIGN §6 precedence) are deferred to v0.2; the CLI takes options and the API takes arguments. | Not needed for the dev run. | — |

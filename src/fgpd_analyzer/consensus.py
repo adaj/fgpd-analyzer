@@ -15,7 +15,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .postprocess import Pattern, validate_patterns
+from .codebook import ANTECEDENT_REQUIRED
+from .postprocess import QC, Pattern, validate_patterns
 from .preprocess import PreparedGroup
 
 
@@ -101,12 +102,20 @@ def merge_cluster(cl: Cluster, order: dict[str, int], group: str, goal: str) -> 
     start, end = by_order[start_o], by_order[max(end_o, start_o)]
     ev_count = Counter(e for p in mem for e in p.evidence_ids)
     evidence = [e for e, k in ev_count.items() if 2 * k >= n] or list(ev_count)
+    # With an even number of members the lower-median span can end before shared
+    # evidence; the span is widened to cover it so no supported evidence is lost.
+    ev_orders = [order[e] for e in evidence]
+    start_o, end_o = min(start_o, *ev_orders), max(end_o, *ev_orders)
     ind_count = Counter(i for p in mem for i in p.indicators)
     indicators = sorted(i for i, k in ind_count.items() if 2 * k >= n)
     if not indicators:
         top = max(ind_count.values())
         indicators = sorted(i for i, k in ind_count.items() if k == top)[:1]
-    antecedent = _majority_id([p.antecedent_id for p in mem], order, strict_half=False)
+    # Required antecedents (G2, G4) take the most cited one; optional ones need a
+    # strict majority of members, so one citation out of three does not win.
+    antecedent = _majority_id(
+        [p.antecedent_id for p in mem], order, strict_half=goal not in ANTECEDENT_REQUIRED
+    )
     uptake = _majority_id([p.agent_uptake_id for p in mem], order, strict_half=True)
     same_level = [p for p in mem if p.level == level] or mem
     span = (order[start], order[end])
@@ -135,6 +144,7 @@ def merge_cluster(cl: Cluster, order: dict[str, int], group: str, goal: str) -> 
 class ConsensusResult:
     consensus: list[ConsensusPattern]
     unstable: list[ConsensusPattern]
+    qc: QC = field(default_factory=QC)
 
 
 def build_consensus(
@@ -166,9 +176,11 @@ def build_consensus(
     # Re-validate consensus patterns: the same structural rules, and merging of
     # consensus spans that overlap after taking medians (flag consensus_merge).
     raw = [_as_raw(cp.pattern) for cp in keep]
-    validated, _ = validate_patterns(
-        raw, pg, goal, -1, source=keep[0].pattern.source if keep else "model"
+    qc = QC()
+    validated, qc = validate_patterns(
+        raw, pg, goal, -1, source=keep[0].pattern.source if keep else "model", qc=qc
     )
+    used: set[int] = set()
     final: list[ConsensusPattern] = []
     for vp in validated:
         span = (order[vp.start_id], order[vp.end_id])
@@ -185,7 +197,10 @@ def build_consensus(
                 key=lambda cp: iou((order[cp.pattern.start_id], order[cp.pattern.end_id]), span),
             )
         ]
+        used.update(id(cp) for cp in parts)
         flags = set(vp.qc_flags) | {f for cp in parts for f in cp.pattern.qc_flags}
+        if n_ok == 1:
+            flags.add("no_dispersion")
         if "overlap_merged" in vp.qc_flags and len(parts) > 1:
             flags.discard("overlap_merged")
             flags.add("consensus_merge")
@@ -199,7 +214,19 @@ def build_consensus(
                 member_ids=tuple(m for cp in parts for m in cp.member_ids),
             )
         )
-    return ConsensusResult(final, unstable)
+    # A supported cluster that fails the rules once merged is kept as unstable, flagged.
+    for cp in keep:
+        if id(cp) not in used:
+            qc.counts["dropped_in_consensus"] += 1
+            unstable.append(
+                replace(
+                    cp,
+                    pattern=replace(
+                        cp.pattern, qc_flags=(*cp.pattern.qc_flags, "dropped_in_consensus")
+                    ),
+                )
+            )
+    return ConsensusResult(final, unstable, qc)
 
 
 def _as_raw(p: Pattern) -> dict[str, object]:
@@ -226,8 +253,8 @@ def fleiss_kappa(table: np.ndarray) -> float | None:
     p_j = table.sum(axis=0) / table.sum()
     p_i = ((table**2).sum(axis=1) - n_raters) / (n_raters * (n_raters - 1))
     p_bar, p_e = p_i.mean(), (p_j**2).sum()
-    if p_e >= 1:
-        return 1.0 if p_bar >= 1 else None
+    if p_e >= 1:  # every rating in one category: kappa is undefined
+        return None
     return float((p_bar - p_e) / (1 - p_e))
 
 

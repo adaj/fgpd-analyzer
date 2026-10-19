@@ -85,9 +85,13 @@ async def _one(
     sem: asyncio.Semaphore,
     limiter: RateLimiter,
 ) -> CallResult:
-    """Never raises: an unexpected error becomes a failed result for this call only."""
+    """Never raises: an unexpected error becomes a failed result for this call only
+    (usage of earlier attempts is kept)."""
+    res = CallResult(job.pg.group, job.goal, job.run_idx, "failed")
     try:
-        return await _attempts(job, backend, cache, config, registry, prompt_hash, sem, limiter)
+        return await _attempts(
+            res, job, backend, cache, config, registry, prompt_hash, sem, limiter
+        )
     except Exception as e:  # noqa: BLE001
         log.warning(
             "unexpected error group=%s goal=%s run=%d type=%s",
@@ -96,12 +100,13 @@ async def _one(
             job.run_idx,
             type(e).__name__,
         )
-        return CallResult(
-            job.pg.group, job.goal, job.run_idx, "failed", error=f"unexpected: {type(e).__name__}"
-        )
+        res.status, res.patterns = "failed", []
+        res.error = f"unexpected: {type(e).__name__}"
+        return res
 
 
 async def _attempts(
+    res: CallResult,
     job: Job,
     backend: LLMBackend,
     cache: ResponseCache | None,
@@ -111,11 +116,22 @@ async def _attempts(
     sem: asyncio.Semaphore,
     limiter: RateLimiter,
 ) -> CallResult:
-    res = CallResult(job.pg.group, job.goal, job.run_idx, "failed")
     mt = config.max_tokens
     retried = {"max_tokens": False, "refusal": False, "parse": False, "schema": False}
     payload = job.payload
     namespace = str(getattr(backend, "cache_namespace", getattr(backend, "name", "unknown")))
+    # If an earlier run already needed the string-id fallback schema (R20), go there
+    # directly: its response is cached (or recorded) under the fallback key.
+    fallback = build_payload(job.pg, registry, config, string_ids=True)
+    fb_key = build_request(
+        fallback, job.pg, registry, config, prompt_hash, job.goal, job.run_idx, namespace=namespace
+    ).cache_key
+    has = getattr(backend, "has", None)
+    if (cache is not None and config.cache == "use" and cache.get(fb_key) is not None) or (
+        callable(has) and has(fb_key)
+    ):
+        payload = fallback
+        retried["schema"] = True
     while True:
         req = build_request(
             payload,
@@ -138,11 +154,12 @@ async def _attempts(
                 try:
                     resp = await backend.complete(req)
                 except BackendError as e:
+                    res.attempts += 1
                     if e.status == 400 and not retried["schema"]:
                         # DESIGN §8.2: the API may reject a large enum schema; retry
                         # once with string ids (post-validation still checks every id).
                         retried["schema"] = True
-                        payload = build_payload(job.pg, registry, config, string_ids=True)
+                        payload = fallback
                         res.qc.counts["schema_fallback"] += 1
                         continue
                     res.error = f"backend: {e}"

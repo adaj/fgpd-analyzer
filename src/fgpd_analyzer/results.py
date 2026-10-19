@@ -30,7 +30,17 @@ LIST_COLUMNS = (
     "member_ids",
     "message_ids",
 )
-NA_STATUSES = ("insufficient_data", "too_long", "excluded", "refused", "failed")
+STATUSES = (
+    "ok",
+    "partial",
+    "insufficient_data",
+    "too_long",
+    "excluded",
+    "not_selected",
+    "refused",
+    "failed",
+)
+NA_STATUSES = ("insufficient_data", "too_long", "excluded", "not_selected", "refused", "failed")
 
 
 @dataclass
@@ -63,6 +73,8 @@ class FGPDResults:
     def __post_init__(self) -> None:
         self._patterns: pd.DataFrame | None = None
         self._frequencies: pd.DataFrame | None = None
+        # original username -> pseudonym per group; in memory only, never saved by default
+        self._pseudonym_map: dict[str, dict[str, str]] = {}
 
     @property
     def patterns(self) -> pd.DataFrame:
@@ -123,7 +135,10 @@ class FGPDResults:
         *,
         format: Literal["csv", "parquet"] = "csv",
         timeseries_every: tuple[str, ...] = ("5min",),
+        include_pseudonym_map: bool = False,
     ) -> dict[str, Path]:
+        """Write every table. `include_pseudonym_map=True` also writes the map from real
+        usernames to pseudonyms (personal data: keep the folder private)."""
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
         tables = {
@@ -156,6 +171,23 @@ class FGPDResults:
             json.dumps(self.validation, indent=2, default=str), encoding="utf-8"
         )
         out["run_metadata"] = d / "run_metadata.json"
+        if include_pseudonym_map:
+            import warnings
+
+            from .exceptions import PrivacyWarning
+
+            if not self._pseudonym_map:
+                raise ValueError(
+                    "no pseudonym map in these results (maps are never loaded from disk)"
+                )
+            warnings.warn(
+                "writing the pseudonym map (real usernames)", PrivacyWarning, stacklevel=2
+            )
+            path = d / "pseudonym_map.json"
+            path.write_text(
+                json.dumps(self._pseudonym_map, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            out["pseudonym_map"] = path
         out["validation"] = d / "validation.json"
         return out
 
@@ -215,23 +247,108 @@ def _write(df: pd.DataFrame, path: Path, fmt: str) -> None:
         df.to_parquet(path, index=False)
 
 
+INT_COLUMNS = frozenset(
+    [
+        "order",
+        "n_messages",
+        "run_idx",
+        "k",
+        "level",
+        "level_min",
+        "level_max",
+        "n_runs_detected",
+        "n_student_messages",
+        "n_student_units",
+        "n_agent_messages",
+        "n_students",
+        "row_index",
+        "seq",
+        "attempts",
+        "n_patterns",
+        "count",
+        "count_strong",
+        "influenced_count",
+        "uptake_count",
+        "temporal_only_count",
+        "n_runs_ok",
+        "n_unstable",
+        "n_speakers",
+        "bin_index",
+        "count_cum",
+        "student_messages_cum",
+    ]
+)
+FLOAT_COLUMNS = frozenset(
+    [
+        "t_start_min",
+        "t_end_min",
+        "t_min",
+        "duration_min",
+        "agent_share",
+        "support",
+        "start_min",
+        "end_min",
+        "score",
+        "agent_lag_s",
+        "frequency",
+        "mean_score",
+        "rate_per_100",
+        "participation",
+        "influenced_frequency",
+        "freq_run_mean",
+        "freq_run_sd",
+        "bin_start_min",
+        "bin_end_min",
+        "frequency_cum",
+        "influenced_frequency_cum",
+        "rate_per_100_cum",
+    ]
+)
+BOOL_COLUMNS = frozenset(
+    [
+        "is_agent",
+        "flagged_agent_share",
+        "from_cache",
+        "influenced",
+    ]
+)
+TIME_COLUMNS = frozenset(
+    [
+        "t_start",
+        "t_end",
+        "timestamp",
+        "start_ts",
+        "end_ts",
+        "first_ts",
+        "bin_end",
+    ]
+)
+
+
 def _read(path: Path, fmt: str) -> pd.DataFrame:
-    if fmt == "csv":
-        df = pd.read_csv(path, keep_default_na=True)
-        for c in df.columns:
-            if c in LIST_COLUMNS:
-                df[c] = df[c].map(lambda v: tuple(json.loads(v)) if isinstance(v, str) else ())
-        for c in ("t_start", "t_end", "timestamp", "start_ts", "end_ts", "first_ts"):
-            if c in df.columns:
-                df[c] = pd.to_datetime(df[c], format="mixed")
-        for c in df.columns:
-            if df[c].dtype == object and c not in LIST_COLUMNS:
-                df[c] = df[c].astype("string")
-    else:
+    if fmt != "csv":
         df = pd.read_parquet(path)
         for c in df.columns:
             if c in LIST_COLUMNS:
                 df[c] = df[c].map(lambda v: tuple(v) if v is not None else ())
+        return df
+    # Read everything as text, then cast known columns: ids such as "007", "NA"
+    # or "001" must survive (docs/decisions.md D3).
+    df = pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[])
+    for c in df.columns:
+        col = df[c]
+        if c in LIST_COLUMNS:
+            df[c] = col.map(lambda v: tuple(json.loads(v)) if v else ())
+        elif c in INT_COLUMNS:
+            df[c] = pd.to_numeric(col.replace("", None), errors="coerce").astype("Int64")
+        elif c in FLOAT_COLUMNS:
+            df[c] = pd.to_numeric(col.replace("", None), errors="coerce").astype("Float64")
+        elif c in BOOL_COLUMNS:
+            df[c] = col.map({"True": True, "False": False, "": None}).astype("boolean")
+        elif c in TIME_COLUMNS:
+            df[c] = pd.to_datetime(col.replace("", None), format="mixed")
+        else:
+            df[c] = col.astype("string").replace("", pd.NA)
     return df
 
 
@@ -357,6 +474,11 @@ def _locate(
     df["agent_influence"] = pd.Categorical(
         df["agent_influence"], categories=["uptake", "temporal_only", "none"]
     )
+    df["agent_position"] = pd.Categorical(df["agent_position"], categories=["before", "within"])
+    df["goal"] = pd.Categorical(df["goal"], categories=list(GOALS))
+    df["goal_label"] = pd.Categorical(df["goal_label"], categories=[GOAL_LABELS[g] for g in GOALS])
+    for c in ("level", "level_min", "level_max", "n_speakers", "n_runs_detected"):
+        df[c] = df[c].astype("Int8")
     return df
 
 
@@ -370,8 +492,11 @@ def group_goal_status(
                 status[(str(g.group), goal)] = str(g.eligibility)
                 continue
             c = calls[(calls["group"] == g.group) & (calls["goal"] == goal)]
+            if c.empty:  # eligible but not requested (analyze(groups=[...]))
+                status[(str(g.group), goal)] = "not_selected"
+                continue
             ok = int((c["status"] == "ok").sum())
-            if len(c) and ok == len(c):
+            if ok == len(c):
                 status[(str(g.group), goal)] = "ok"
             elif ok:
                 status[(str(g.group), goal)] = "partial"
@@ -404,6 +529,8 @@ def _frequencies(res: FGPDResults) -> pd.DataFrame:
                 "duration_min": float(g.duration_min),
             }
             if st in NA_STATUSES:
+                if st in ("failed", "refused"):
+                    base["n_runs_ok"] = 0
                 rows.append(base)
                 continue
             p = pats[(pats["group"] == gname) & (pats["goal"] == goal)]
@@ -498,6 +625,8 @@ def _frequencies(res: FGPDResults) -> pd.DataFrame:
     ):
         df[c] = df[c].astype("Float64")
     df["goal"] = pd.Categorical(df["goal"], categories=list(GOALS))
+    df["goal_label"] = pd.Categorical(df["goal_label"], categories=[GOAL_LABELS[g] for g in GOALS])
+    df["status"] = pd.Categorical(df["status"], categories=list(STATUSES))
     return df
 
 
@@ -551,4 +680,23 @@ def _timeseries(res: FGPDResults, every: timedelta, cumulative: bool, origin: st
                     row["bin_end"] = first_ts + timedelta(minutes=hi)
                 rows.append(row)
                 prev = cur
-    return pd.DataFrame(rows)
+    sfx = "_cum" if cumulative else ""
+    cols = [
+        "group",
+        "goal",
+        "bin_index",
+        "bin_start_min",
+        "bin_end_min",
+        f"frequency{sfx}",
+        f"count{sfx}",
+        f"influenced_frequency{sfx}",
+        f"student_messages{sfx}",
+    ]
+    if cumulative:
+        cols.append("rate_per_100_cum")
+    if origin == "absolute":
+        cols.append("bin_end")
+    df = pd.DataFrame(rows, columns=cols)
+    for c in ("bin_index", f"count{sfx}", f"student_messages{sfx}"):
+        df[c] = df[c].astype("Int32")
+    return df

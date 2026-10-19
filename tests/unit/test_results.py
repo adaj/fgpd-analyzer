@@ -510,3 +510,153 @@ def test_malformed_http_body_fails_one_call_only(pg):
     )
     res = FGPDAnalyzer(backend=AnthropicBackend(client=client), cache="off").analyze(big_chat(30))
     assert (res.calls["status"] == "failed").all() and len(res.calls) == 12
+
+
+# ------------------------------------------------------------------ M4 audit fixes
+
+
+def test_csv_roundtrip_keeps_string_ids(tmp_path):
+    df = pd.concat([big_chat(30, "007"), big_chat(30, "NA")], ignore_index=True)
+    df["message_id"] = [f"{i:03d}" for i in range(len(df))]
+    res = analyzer().analyze(df)
+    res.save(tmp_path)
+    back = FGPDResults.load(tmp_path)
+    assert set(back.frequencies["group"]) == {"007", "NA"}
+    assert back.messages["message_id"].iloc[0] == "000"
+    pd.testing.assert_frame_equal(back.frequencies, res.frequencies, check_dtype=False)
+
+
+def test_not_selected_groups():
+    df = pd.concat([big_chat(30, "a"), big_chat(30, "b")], ignore_index=True)
+    f = analyzer().analyze(df, groups=["a"]).frequencies
+    assert set(f[f.group == "b"]["status"]) == {"not_selected"}
+    assert set(f[f.group == "a"]["status"]) == {"ok"}
+
+
+def test_schema_fallback_is_replayable(tmp_path):
+    from fgpd_analyzer.backends.mock import ReplayBackend
+    from fgpd_analyzer.exceptions import BackendError
+
+    class RejectsEnums(MockBackend):
+        async def complete(self, request):
+            schema = request.output_config["format"]["schema"]
+            if "enum" in schema["$defs"]["unit_id"]:
+                self.calls.append(request)
+                raise BackendError("schema too complex", status=400)
+            return await super().complete(request)
+
+    df = big_chat(30)
+    live = FGPDAnalyzer(backend=RejectsEnums(), cache="use", cache_dir=tmp_path).analyze(df)
+    assert (live.calls["status"] == "ok").all()
+    from fgpd_analyzer.cache import ResponseCache
+
+    jsonl = ResponseCache(tmp_path).export_jsonl(tmp_path / "rec.jsonl")
+    rep = FGPDAnalyzer(backend=ReplayBackend(jsonl, namespace="mock"), cache="off").analyze(df)
+    assert (rep.calls["status"] == "ok").all()
+    pd.testing.assert_frame_equal(rep.frequencies, live.frequencies)
+    again = RejectsEnums()
+    FGPDAnalyzer(backend=again, cache="use", cache_dir=tmp_path).analyze(df)
+    assert again.calls == []  # straight to the cached fallback, no failing 400 call
+
+
+def test_even_runs_keep_supported_evidence(pg):
+    runs = {
+        r: [pat(r, s, e, ["u004"] if r < 2 else ["u004", "u005"], 2)]
+        for r, (s, e) in enumerate(
+            [("u002", "u003"), ("u002", "u003"), ("u004", "u005"), ("u004", "u005")]
+        )
+    }
+    for r in (0, 1):  # evidence must be inside the member span
+        runs[r] = [pat(r, "u002", "u004", ["u004"], 2)]
+    res = build_consensus(runs, pg, "G1", 0.3, 0.5)
+    assert len(res.consensus) == 1
+    assert "u004" in res.consensus[0].pattern.evidence_ids
+
+
+def test_no_dispersion_flag_and_kappa_undefined(pg):
+    res = build_consensus({0: [pat(0, "u002", "u003", ["u002"])]}, pg, "G1", 0.3, 0.5)
+    assert "no_dispersion" in res.consensus[0].pattern.qc_flags
+    assert fleiss_kappa(np.array([[3, 0], [3, 0]], dtype=float)) is None
+
+
+def test_optional_antecedent_needs_majority(pg):
+    runs = {
+        0: [pat(0, "u004", "u006", ["u005"], 2, ante="u004")],
+        1: [pat(1, "u004", "u006", ["u005"], 2)],
+        2: [pat(2, "u004", "u006", ["u005"], 2)],
+    }
+    (c,) = build_consensus(runs, pg, "G1", 0.3, 0.5).consensus
+    assert c.pattern.antecedent_id is None
+
+
+def test_pseudonym_map_only_on_request(tmp_path):
+    res = analyzer().analyze(big_chat(30))
+    res.save(tmp_path / "a")
+    assert not (tmp_path / "a" / "pseudonym_map.json").exists()
+    from fgpd_analyzer.exceptions import PrivacyWarning
+
+    with pytest.warns(PrivacyWarning):
+        res.save(tmp_path / "b", include_pseudonym_map=True)
+    m = json.loads((tmp_path / "b" / "pseudonym_map.json").read_text())
+    assert m["g"]["Ana"].startswith("S")
+    assert res.run_metadata["groups"]["g"]["status"]["G1"] == "ok"
+
+
+def test_cli_influence_keeps_format_and_bad_rule(tmp_path):
+    from fgpd_analyzer.cli import app
+
+    path = tmp_path / "chats.csv"
+    big_chat(30).to_csv(path, index=False)
+    out = tmp_path / "res"
+    runner = CliRunner()
+    r = runner.invoke(
+        app,
+        [
+            "analyze",
+            str(path),
+            "-o",
+            str(out),
+            "--backend",
+            "mock",
+            "--format",
+            "parquet",
+            "--every",
+            "5min",
+            "--every",
+            "10min",
+            "--cache",
+            "off",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert runner.invoke(app, ["influence", str(out), "--lag", "30s"]).exit_code == 0
+    assert not list(out.glob("*.csv"))
+    assert {p.name for p in out.glob("timeseries_*")} == {
+        "timeseries_5min.parquet",
+        "timeseries_10min.parquet",
+    }
+    assert runner.invoke(app, ["influence", str(out), "--rule", "nope"]).exit_code == 2
+    assert (
+        runner.invoke(
+            app, ["analyze", str(path), "-o", str(out), "--backend", "mock", "--effort", "huge"]
+        ).exit_code
+        == 2
+    )
+
+
+def test_coding_sheet_rows_are_sheet_rows(tmp_path):
+    from openpyxl import load_workbook
+
+    from fgpd_analyzer.coding import check_coding_sheet
+
+    fa = FGPDAnalyzer()
+    df = big_chat(30)
+    sheet = fa.export_coding_sheet(df, tmp_path / "s.xlsx")
+    wb = load_workbook(sheet)
+    ws = wb["G2"]
+    ws.append(["u003", "u004", "u004", "u003", "rephrase", "2", None, "ok"])
+    ws.append([None] * 8)
+    ws.append(["u005", "u006", "u006", None, "rephrase", "2", None, "no antecedent"])
+    wb.save(sheet)
+    rep = check_coding_sheet(fa.prepare(df), sheet)
+    assert rep["row"].tolist() == [6] and "drop_missing_antecedent" in rep["problems"].iloc[0]

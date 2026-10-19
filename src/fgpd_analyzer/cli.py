@@ -110,6 +110,9 @@ def analyze(
     chat_language: str | None = None,  # noqa: UP007
     exclude_flagged: bool = False,
     fmt: Annotated[str, typer.Option("--format")] = "csv",
+    group: Annotated[list[str] | None, typer.Option("--group", help="Only these groups.")] = None,
+    cache: Annotated[str, typer.Option(help="use, refresh or off.")] = "use",
+    cache_dir: Path | None = None,
 ) -> None:
     """Run the analysis and save all outputs to OUT."""
     from .exceptions import BackendError, ConfigError, InputValidationError
@@ -125,15 +128,27 @@ def analyze(
             justification_language=justification_language,
             chat_language=chat_language,
             exclude_flagged=exclude_flagged,
+            cache=cache,
+            cache_dir=cache_dir,
         )
-        res = fa.analyze(chats, columns=_columns(column))
+    except (ConfigError, ValueError) as e:
+        typer.echo(f"configuration error: {e}", err=True)
+        raise typer.Exit(2) from e
+    try:
+        res = fa.analyze(chats, columns=_columns(column), groups=group or None)
     except InputValidationError as e:
         typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    except KeyError as e:
+        typer.echo(f"error: {e}", err=True)
         raise typer.Exit(2) from e
     except (BackendError, ConfigError) as e:
         typer.echo(f"backend error: {e}", err=True)
         raise typer.Exit(3) from e
     res.save(out, format=fmt, timeseries_every=tuple(every or ["5min"]))
+    if res.calls.empty:
+        typer.echo("no eligible group to analyze; see validation.json", err=True)
+        raise typer.Exit(2)
     meta = res.run_metadata
     typer.echo(
         f"saved to {out}; {meta['n_calls']} calls ({meta['n_cached']} cached), "
@@ -162,11 +177,20 @@ def influence(
     results: Path, lag: str = "2min", rule: str = "uptake", out: Path | None = None
 ) -> None:  # noqa: UP007
     """Recompute agent influence with another lag or rule. No network."""
+    from .exceptions import ConfigError
     from .results import FGPDResults
 
-    res = FGPDResults.load(results).with_influence(lag, rule)
+    try:
+        res = FGPDResults.load(results).with_influence(lag, rule)
+    except (ValueError, ConfigError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
     target = out or results
-    res.save(target)
+    fmt = "parquet" if (results / "units.parquet").exists() else "csv"
+    every = tuple(sorted(p.stem.split("_", 1)[1] for p in results.glob(f"timeseries_*.{fmt}"))) or (
+        "5min",
+    )
+    res.save(target, format=fmt, timeseries_every=every)  # type: ignore[arg-type]
     typer.echo(f"influence recomputed (lag {lag}, rule {rule}) in {target}")
 
 
@@ -221,16 +245,19 @@ def sheet_check(
     raise typer.Exit(0 if report.empty else 4)
 
 
+CacheDirOpt = Annotated[Path | None, typer.Option("--cache-dir")]
+
+
 @cache_app.command("info")
-def cache_info() -> None:
+def cache_info(cache_dir: CacheDirOpt = None) -> None:
     from .cache import ResponseCache
 
-    c = ResponseCache()
+    c = ResponseCache(cache_dir)
     typer.echo(f"{c.path}: {len(c)} responses")
 
 
 @cache_app.command("export")
-def cache_export(path: Path, results: Path | None = None) -> None:
+def cache_export(path: Path, results: Path | None = None, cache_dir: CacheDirOpt = None) -> None:
     """Write cached responses as JSONL for ReplayBackend (only those of RESULTS, if given)."""
     import json
 
@@ -240,15 +267,15 @@ def cache_export(path: Path, results: Path | None = None) -> None:
     if results is not None:
         meta = json.loads((results / "run_metadata.json").read_text(encoding="utf-8"))
         keys = set(meta.get("cache_keys", []))
-    out = ResponseCache().export_jsonl(path, keys)
+    out = ResponseCache(cache_dir).export_jsonl(path, keys)
     typer.echo(f"wrote {out}")
 
 
 @cache_app.command("clear")
-def cache_clear() -> None:
+def cache_clear(cache_dir: CacheDirOpt = None) -> None:
     from .cache import ResponseCache
 
-    typer.echo(f"removed {ResponseCache().clear()} responses")
+    typer.echo(f"removed {ResponseCache(cache_dir).clear()} responses")
 
 
 if __name__ == "__main__":  # pragma: no cover
