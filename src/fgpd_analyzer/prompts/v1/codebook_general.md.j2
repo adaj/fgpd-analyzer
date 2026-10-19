@@ -1,0 +1,63 @@
+# General rules
+
+## 1. Purpose
+
+This codebook identifies where students in a group chat pursue each of the Four Goals for Productive Discussion (Michaels & O'Connor, Figure 1, p. 338) and how fully they reach it. The goals were written as goals a teacher pursues; here each goal is translated into the student behaviour it aims to produce. You code what students do, not what the agent or teacher asks for.
+
+| Code | Label | What students do |
+|---|---|---|
+| G1 | share | Make their own task-relevant thinking public, and expand or clarify it |
+| G2 | listen | Show that they oriented to the content of a peer's contribution |
+| G3 | deepen | Warrant, extend or revise reasoning |
+| G4 | engage | Operate on a peer's reasoning |
+
+The goals are coded independently, in four separate passes, one goal per pass.
+
+## 2. Units
+
+The transcript has one line per unit:
+
+```
+unit_id | clock time | minutes since start | speaker | text
+```
+
+A unit is either one agent message or a run of consecutive messages by the same student sent within about a minute of each other. The messages of a student unit are joined with " ⏎ ". Treat a unit as one contribution. Every reference you make (start, end, evidence, antecedent, agent uptake) is a unit id.
+
+## 3. Patterns
+
+A **pattern** of goal Gk is one contiguous stretch of the chat in which students pursue Gk around one idea, question or claim and its direct development.
+
+- **Span.** A pattern has a start unit and an end unit. Start at the first student unit that is evidence for the goal, or at the agent or peer unit that prompts it if that unit is part of the exchange. End at the last evidence unit. The span may include agent units, off-task units and filler.
+- **New pattern.** A new pattern of the same goal begins when (a) the students move to a different idea or question, or (b) {{ pattern_gap_units }} units of any speaker, or more than {{ pattern_gap_min }} minutes, pass without evidence for the goal.
+- **No overlap.** Two patterns of the same goal never overlap, and a unit is evidence for at most one pattern of a goal. If two threads interleave, code them as one pattern.
+- **Evidence.** The student units that make up the pattern, listed in the order they appear. Agent units are never evidence. Every evidence unit lies between the start and the end.
+- **Antecedent.** The single peer student unit whose content is taken up, when the goal requires one (G2 and G4; optional for G1 and G3). The antecedent belongs to a different student than at least one evidence unit. It may lie before the start of the span, for example when a student says "as you said earlier". It is never an agent unit. The antecedent is never also an evidence unit: it is what is taken up, not the taking up.
+- **Agent uptake.** The agent unit whose question, move or topic the students take up in this pattern, or none. Cite it only if the students' units respond to that agent unit's content. Do not cite an agent unit just because it is nearby. It must come before the last evidence unit.
+- **Indicators.** One or more indicator codes from the goal's list that are present in the evidence.
+- **Level.** An integer from 1 to 4 taken from the goal's anchor table. Assign the highest level whose conditions are all met. If you are torn between two levels, assign the lower one. A stretch that does not reach level 1 is not a pattern; do not report it.
+- **Justification.** A short justification of at most 40 words, written in {{ justification_language }}, that cites the unit ids that support the level. Use the speakers' pseudonyms (S1, S2, AG1), never real names.
+
+## 4. What is not evidence for any goal
+
+- Off-task talk.
+- Pure coordination or procedure without task content ("which page?", "click next", "you type it").
+- Backchannel and bare acknowledgement ("ok", "yes", "kkk", "lol", emoji).
+- Copying task text or a peer's message without transforming it. Copying is not rephrasing.
+- Typo corrections (they are already part of the unit).
+- Answers dictated by a peer and then typed in ("type 37").
+- Text pasted from an external source without the student's own framing.
+- Questions to the agent about how to use the interface.
+
+Coordination about task content, such as "let's put the temperature on the x-axis", counts as a G1 idea, at most level 2 unless the student gives a reason for it.
+
+## 5. Agents and teachers
+
+- Agent and teacher units are context. A student's response to an agent move can be evidence for G1 or G3. For example, an agent asks "can you say more?" and the student expands their idea.
+- Agreeing with, answering or rephrasing the agent's own content is not G2 or G4. Those goals need a peer student's contribution as the antecedent. Exception: when the agent relays a peer's idea ("S1 said X, S2 do you agree?"), the antecedent is that peer's unit.
+- An answer to an agent's recap counts only if it adds the student's own reasoning. Repeating what was already said is not enough.
+
+## 6. Language and correctness
+
+- Wrong but reasoned ideas fully count. Correctness is not part of the construct.
+- Informal spelling, abbreviations, code-switching and fragments are not penalized if a partner could plausibly understand the idea.
+- Goals are not a ladder for coding purposes: never cap G3 or G4 because G1 or G2 is low.

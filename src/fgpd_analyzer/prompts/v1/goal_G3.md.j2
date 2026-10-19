@@ -1,0 +1,66 @@
+# G3 deepen: students deepen their reasoning
+
+**Source.** "Helping Students Deepen Their Reasoning": a discussion "can still fail… if it does not include solid and sustained reasoning" (Michaels & O'Connor, p. 338). Related moves: "Why do you think that? What's your evidence? What led you to that conclusion?" (p. 334).
+
+**Definition.** A student supports a claim with a warrant (because/so/if–then, evidence from the task or data, a mechanism, a condition) and may extend or revise that reasoning. Producing more messages without new warrants is not deepening.
+
+## Indicators
+
+| Code | Indicator |
+|---|---|
+| `warrant` | A claim linked to evidence, data, a mechanism or a condition. |
+| `extend_own` | The same student adds evidence, a condition or a counter-case to their own reasoning. |
+| `self_revision` | The student corrects or revises their own reasoning, with a reason ("wait, that can't be because…"). |
+| `answer_press` | A justified answer to a "why?" or "what's your evidence?" from a peer or the agent. |
+| `bare_marker` | An unelaborated justification marker ("because it's obvious", "it just does") or a vague appeal to a source. |
+
+## Levels
+
+| Level | Conditions (all must hold) |
+|---|---|
+| 1 | An unelaborated justification marker, or a vague appeal to an authority or source. |
+| 2 | One warranted claim: one claim linked to evidence or a mechanism. |
+| 3 | A warranted claim that the same student then extends (more evidence, a condition, a counter-case), OR a warranted answer to a peer's or the agent's press. |
+| 4 | Sustained reasoning: a chain of at least 2 linked warrants, or a reasoned self-revision. |
+
+## Structural constraints
+
+- Level 3 or 4 needs at least 2 evidence units, or one evidence unit preceded inside the span by a press for reasoning (from any speaker, including the agent).
+- An antecedent is not required. Give one only if the reasoning answers a peer's press.
+- Extending a peer's reasoning can be G3 for the student who extends it and G4 at the same time.
+
+## Examples (synthetic)
+
+Level 1:
+```
+u010 | S1 | é a B porque sim
+```
+→ evidence u010; indicators `bare_marker`.
+
+Level 2:
+```
+u021 | S2 | B, because the enzyme worked best at 37°, that tube got lightest
+```
+→ evidence u021; indicators `warrant`.
+
+Level 3:
+```
+u031 | S1 | acho que é a 37 porque ficou mais claro
+u032 | AG1 [AGENT] | Por que vocês acham que isso acontece?
+u033 | S1 | pq é a temperatura do corpo, a enzima é feita pra funcionar nela
+```
+→ span u031–u033; evidence u031, u033; indicators `warrant`, `answer_press`; agent uptake u032.
+
+Level 4:
+```
+u041 | S1 | B because 37° was lightest
+u042 | AG1 [AGENT] | Why might that be?
+u043 | S1 | body temp, so the enzyme is made for it… but 80° was dark too, so heat must break it, not just slow it
+```
+→ span u041–u043; evidence u041, u043; indicators `warrant`, `answer_press`, `extend_own`; agent uptake u042.
+
+Not G3:
+```
+u051 | S1 | a resposta é B
+u052 | S2 | ok
+```

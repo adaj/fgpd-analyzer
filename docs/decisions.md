@@ -31,3 +31,35 @@ taken by Adelson; the rest are proposals he can veto.
 | D10 | A log filter redacts every original username (≥ 2 chars) and extra name from log records. | Second line of defence; logs should contain ids only anyway. | — |
 | D11 | `mypy --strict` with `warn_return_any = false` and the pydantic plugin. | pandas-stubs 3.0 types several DataFrame constructors as `Any`. | dropping strict |
 | D12 | Tests that need the private dev file run only when `FGPD_DEV_DATA` points to it; the file is never committed (`*.tsv` is git-ignored outside `tests/fixtures`). | Privacy. | committing a sample |
+
+### M1 audit (independent reviewer, 2026-10-19): 2 major and 9 minor findings, all fixed
+
+| # | Finding | Fix |
+|---|---|---|
+| R1 (major) | Timezone detection by regex crashed on `-03`, `UTC` and DST changes. | Each value is parsed on its own; E006 if aware and naive are mixed, E004 otherwise; never raises. Aware times keep the first value's offset, so clock times stay local. |
+| R2 (major) | The redacting log filter did not apply to child loggers. | Every module gets its logger from `get_logger()`, which attaches the filter; redaction also ignores accents. |
+| R3 | NFD usernames were not matched in NFC text. | Every text column is normalized to NFC during validation. |
+| R4 | A name from another group stayed in the text. | Names of students in other groups become `[NAME]`. |
+| R5 | `extra_names` appeared in `repr` and metadata. | Shown as a count; their hash enters the fingerprint. |
+| R6 | Rows that differ only in `message_id` were dropped as duplicates. | `message_id` is part of the duplicate key. |
+| R7 | Excel cells reading `NA`, `null` or `N/A` were dropped. | Excel is read without NA conversion. |
+| R8 | A username such as `S2` could collide with a pseudonym. | Prefixes switch to `ST`/`AGT` (W014). |
+| R9 | Column, timestamp and id codes overlapped. | Mapped-but-missing column → E001 only; ambiguous synonyms → E002; empty timestamp → E003 only; an all-empty `message_id` column falls back to generated ids (I002). |
+| R10 | `\r\n` broke one-line rendering; ids past `u999` broke sorting; `05/09` was read month-first silently. | `splitlines()`; zero-padded ids sized to the chat; `dayfirst` option and W015 when the order was guessed. |
+| R11 | Missing tests. | 19 tests added. |
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D13 | Invalid configuration raises `ConfigError` when the analyzer is built; E009 is reserved and not emitted. | Fail before reading any data. | reporting config errors per input |
+
+## M2: prompts and codebook
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D14 | Prompts address the reader as "you". The same text is the model's instruction and the human codebook. | Byte-identical sections without rewording. | separate model and human versions |
+| D15 | One synthetic example per level, alternating PT and EN (DESIGN asked for two per level). | Keeps the cached prefix near 5k tokens and limits anchoring on examples. Can grow if the pilot shows confusion. | 32 examples |
+| D16 | The antecedent is never also an evidence unit. G4 level ≥ 3 is restated as "≥ 2 evidence units, one of them from the antecedent's speaker after the first operation", which is the design's 3-unit exchange counted without the antecedent. | One rule for all goals; `participation` does not count the student who was only taken up. | antecedent inside evidence for G4 only |
+| D17 | `docs/codebook.md` is generated from the prompts and committed; a test fails when it is stale. | DESIGN K R1 (no drift between prompts and codebook). | — |
+| D18 | The Portuguese translation of the codebook is written in M6, after the pilot revisions. | Translate once, not after every prompt change. | translating now |
+| D19 | References in the codebook header: full book reference of Michaels & O'Connor and the JCAL author list are marked "to be confirmed". | Not verifiable from the PDF alone. | guessing |
+| D20 | Coding workbook: README, `transcript`, `messages`, one sheet per goal with a level dropdown. One workbook per group is recommended for coding studies. | Matches the model's output fields. | one long sheet |

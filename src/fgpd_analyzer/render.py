@@ -16,7 +16,7 @@ def _offset(t_min: float) -> str:
 
 def render_unit(u: Unit) -> str:
     who = f"{u.speaker} [AGENT]" if u.is_agent else u.speaker
-    text = " ".join(u.text.split("\n"))  # one line per unit
+    text = " ".join(u.text.splitlines())  # one line per unit (\n, \r\n, \r, U+2028)
     return f"{u.unit_id} | {u.t_start:%H:%M:%S} | {_offset(u.t_min)} | {who} | {text}"
 
 

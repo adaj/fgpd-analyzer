@@ -129,7 +129,7 @@ class AnalyzerConfig(BaseModel):
 
     # privacy
     pseudonymize: bool = True
-    extra_names: tuple[str, ...] = ()
+    extra_names: tuple[str, ...] = Field((), repr=False)
     min_name_len_in_text: int = Field(3, ge=1)
 
     # languages
@@ -138,6 +138,7 @@ class AnalyzerConfig(BaseModel):
 
     # behaviour
     sort: bool = True
+    dayfirst: bool = False
     strict: bool = False
     cache: Literal["use", "refresh", "off"] = "use"
     cache_dir: Path | None = None
@@ -196,11 +197,15 @@ class AnalyzerConfig(BaseModel):
         for f in _FINGERPRINT_FIELDS:
             v = getattr(self, f)
             payload[f] = v.total_seconds() if isinstance(v, timedelta) else v
+        payload["extra_names_sha"] = hashlib.sha256(
+            "\x00".join(sorted(self.extra_names)).encode()
+        ).hexdigest()
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
     def redacted(self) -> dict[str, Any]:
         d = self.model_dump(mode="json")
         d["api_key"] = "***" if self.api_key else None
+        d["extra_names"] = f"<{len(self.extra_names)} name(s)>"
         return d
 
 

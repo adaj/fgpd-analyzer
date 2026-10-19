@@ -87,13 +87,14 @@ def _build_units(
     unit_of_msg: list[str] = []
     t0 = msgs["timestamp"].iloc[0]
     cur: dict | None = None  # type: ignore[type-arg]
+    width = max(3, len(str(len(msgs))))  # zero-padded ids keep lexicographic order
 
     def close() -> None:
         assert cur is not None
         k = len(units) + 1
         units.append(
             Unit(
-                unit_id=f"u{k:03d}",
+                unit_id=f"u{k:0{width}d}",
                 order=k,
                 speaker=cur["speaker"],
                 is_agent=cur["agent"],
@@ -130,14 +131,18 @@ def _build_units(
                 "t0": ts,
                 "t1": ts,
             }
-        unit_of_msg.append(f"u{len(units) + 1:03d}")
+        unit_of_msg.append(f"u{len(units) + 1:0{width}d}")
     if cur is not None:
         close()
     return units, unit_of_msg
 
 
 def prepare_group(
-    group: str, sub: pd.DataFrame, config: AnalyzerConfig, report: ValidationReport
+    group: str,
+    sub: pd.DataFrame,
+    config: AnalyzerConfig,
+    report: ValidationReport,
+    other_names: tuple[str, ...] = (),
 ) -> PreparedGroup:
     is_agent_fn = role_matcher(config)
     msgs = sub.reset_index(drop=True).copy()
@@ -147,8 +152,15 @@ def prepare_group(
     msgs["seq"] = range(1, len(msgs) + 1)
 
     ps = Pseudonymizer(min_len=config.min_name_len_in_text, extra_names=config.extra_names)
-    ps.fit(msgs["username"].astype(str), msgs["is_agent"])
+    ps.fit(msgs["username"].astype(str), msgs["is_agent"], other_names=other_names)
     redactor.register(*ps.mapping.keys(), *config.extra_names)
+    if config.pseudonymize and ps.collision:
+        report.add(
+            "W014",
+            "warning",
+            f"some usernames look like pseudonyms; using prefixes {ps.prefixes}",
+            group=str(group),
+        )
     if config.pseudonymize:
         msgs["speaker"] = msgs["username"].map(ps.speaker)
         texts = [ps(str(t)) for t in msgs["text"]]
@@ -243,6 +255,7 @@ def prepare(
     is_agent_fn = role_matcher(config)
     names = clean["username"].astype(str).unique()
     agent_names = [n for n in names if is_agent_fn(n)]
+    student_names = tuple(n for n in names if not is_agent_fn(n))
     if not agent_names:
         report.add(
             "W008",
@@ -268,7 +281,8 @@ def prepare(
                 f"agent pattern matches {n_ag} of {len(users)} usernames",
                 group=str(g),
             )
-        groups[str(g)] = prepare_group(str(g), sub, config, report)
+        others = tuple(n for n in student_names if n not in set(users))
+        groups[str(g)] = prepare_group(str(g), sub, config, report, other_names=others)
     rows = [
         {
             "group": p.group,

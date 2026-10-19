@@ -23,7 +23,8 @@ def _fold_char(c: str) -> str:
 
 def fold(text: str) -> str:
     """Lower-case, accent-free copy with exactly one output char per input char,
-    so that match positions in the folded text are valid in the original."""
+    so that match positions in the folded text are valid in the original.
+    Callers pass NFC text (validation normalizes every column)."""
     return "".join(_fold_char(c) for c in text)
 
 
@@ -41,12 +42,31 @@ class Pseudonymizer:
     _rx: re.Pattern[str] | None = None
     _targets: dict[str, str] = field(default_factory=dict)
 
-    def pseudonym_for(self, kind: str, index: int) -> str:
-        return f"S{index}" if kind == "student" else f"AG{index}"
+    prefixes: tuple[str, str] = ("S", "AG")
+    collision: bool = False
 
-    def fit(self, usernames: Iterable[str], is_agent: Iterable[bool]) -> Pseudonymizer:
+    def pseudonym_for(self, kind: str, index: int) -> str:
+        return f"{self.prefixes[0]}{index}" if kind == "student" else f"{self.prefixes[1]}{index}"
+
+    def fit(
+        self,
+        usernames: Iterable[str],
+        is_agent: Iterable[bool],
+        other_names: Iterable[str] = (),
+    ) -> Pseudonymizer:
+        """`other_names`: participants of other groups; mentions of them in this
+        group's text become ``[NAME]``."""
+        names = list(usernames)
+        agents = list(is_agent)
+        for cand in (("S", "AG"), ("ST", "AGT"), ("STU", "AGENT")):
+            rx = re.compile(rf"^(?:{cand[0]}|{cand[1]}|N)\d+$", re.IGNORECASE)
+            if not any(rx.match(n.strip()) for n in names):
+                if cand != ("S", "AG"):
+                    self.collision = True
+                self.prefixes = cand
+                break
         n = {"student": 0, "agent": 0}
-        for name, agent in zip(usernames, is_agent, strict=True):
+        for name, agent in zip(names, agents, strict=True):
             if name in self.mapping:
                 continue
             kind = "agent" if agent else "student"
@@ -57,6 +77,9 @@ class Pseudonymizer:
             self._add_target(targets, name, pseudo)
         for k, name in enumerate(self.extra_names, 1):
             self._add_target(targets, name, f"N{k}")
+        for name in other_names:
+            if name not in self.mapping:
+                self._add_target(targets, name, "[NAME]")
         self._targets = targets
         if targets:
             alts = sorted(targets, key=len, reverse=True)
@@ -73,6 +96,7 @@ class Pseudonymizer:
     def __call__(self, text: str) -> str:
         if self._rx is None or not text:
             return text
+        text = unicodedata.normalize("NFC", text)
         folded = fold(text)
         out, last = [], 0
         for m in self._rx.finditer(folded):

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -87,6 +88,45 @@ class ValidationReport:
         ]
 
 
+def parse_timestamps(
+    s: pd.Series, missing: pd.Series, *, dayfirst: bool = False
+) -> tuple[pd.Series, list[int], list[int], list[int], list[int]]:
+    """Parse value by value. Returns (parsed, aware positions, naive positions,
+    unparseable positions, positions whose day/month order was guessed). Aware
+    values are converted to the offset of the first aware value, so clock times
+    stay local."""
+    values: list[Any] = []
+    aware: list[int] = []
+    naive: list[int] = []
+    bad: list[int] = []
+    order_warn: list[int] = []
+    for i, (v, miss) in enumerate(zip(s.tolist(), missing.tolist(), strict=True)):
+        if miss or v is None or v is pd.NA:
+            values.append(pd.NaT)
+            continue
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                t = pd.Timestamp(pd.to_datetime(v, dayfirst=dayfirst))
+            if any("dayfirst" in str(w.message) for w in caught):
+                order_warn.append(i)
+        except (ValueError, TypeError, OverflowError):
+            t = pd.NaT
+        if t is pd.NaT or pd.isna(t):
+            bad.append(i)
+            values.append(pd.NaT)
+            continue
+        (aware if t.tzinfo is not None else naive).append(i)
+        values.append(t)
+    if aware and not naive:
+        tz = values[aware[0]].tzinfo
+        out = pd.Series([pd.NaT if pd.isna(v) else v.tz_convert(tz) for v in values], index=s.index)
+        return pd.to_datetime(out, utc=True).dt.tz_convert(tz), aware, naive, bad, order_warn
+    if aware:
+        return pd.Series(values, index=s.index), aware, naive, bad, order_warn
+    return pd.to_datetime(pd.Series(values, index=s.index)), aware, naive, bad, order_warn
+
+
 def _closest(name: str, options: list[str]) -> list[str]:
     import difflib
 
@@ -102,14 +142,16 @@ def check_frame(
     rep = ValidationReport()
     mapping, problems = columns.resolve(raw.columns)
     for canon, problem in problems:
+        code = "E001" if problem.startswith("mapped column") else "E002"
         rep.add(
-            "E002",
+            code,
             "error",
             f"column {canon!r}: {problem}",
             hint=f"pass columns={{'{canon}': '<source column>'}}",
         )
+    flagged = {c for c, _ in problems}
     for canon in REQUIRED_COLUMNS:
-        if canon not in mapping:
+        if canon not in mapping and canon not in flagged:
             sugg = _closest(canon, [str(c) for c in raw.columns])
             rep.add(
                 "E001",
@@ -127,7 +169,7 @@ def check_frame(
     df["row_index"] = range(len(df))
     for c in ("group", "username", "text", "message_id"):
         if c in df:
-            df[c] = df[c].astype("string").str.strip()
+            df[c] = df[c].astype("string").str.normalize("NFC").str.strip()
             df.loc[df[c] == "", c] = pd.NA
 
     # E003 missing keys
@@ -145,29 +187,36 @@ def check_frame(
                 rows=df.loc[miss, "row_index"],
             )
 
-    # timestamps: E006 mixed tz, E004 unparseable
-    ts_raw = df["timestamp"]
-    if not pd.api.types.is_datetime64_any_dtype(ts_raw):
-        s = ts_raw.astype("string").str.strip()
-        tz_aware = s.str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", regex=True, na=False)
-        if tz_aware.any() and (~tz_aware & s.notna()).any():
+    # timestamps: E006 mixed tz, E004 unparseable (never raises)
+    ts_missing = df["timestamp"].isna() | (df["timestamp"].astype("string").str.strip() == "")
+    if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+        parsed, aware_rows, naive_rows, bad_rows, order_rows = parse_timestamps(
+            df["timestamp"].astype("string").str.strip(), ts_missing, dayfirst=config.dayfirst
+        )
+        if aware_rows and naive_rows:
             rep.add(
                 "E006",
                 "error",
                 "mixed timezone-aware and naive timestamps",
-                rows=df.loc[~tz_aware & s.notna(), "row_index"],
+                rows=df["row_index"].iloc[naive_rows],
                 hint="make all timestamps naive or all timezone-aware",
             )
             return rep, None
-        parsed = pd.to_datetime(s, errors="coerce", utc=bool(tz_aware.any()), format="mixed")
-        bad = parsed.isna() & s.notna()
-        if bad.any():
+        if bad_rows:
             rep.add(
                 "E004",
                 "error",
-                f"{int(bad.sum())} unparseable timestamp(s)",
-                rows=df.loc[bad, "row_index"],
+                f"{len(bad_rows)} unparseable timestamp(s)",
+                rows=df["row_index"].iloc[bad_rows],
                 hint="use ISO 8601, e.g. 2026-09-17 19:38:23",
+            )
+        if order_rows:
+            rep.add(
+                "W015",
+                "warning",
+                f"{len(order_rows)} timestamp(s) with a guessed day/month order",
+                rows=df["row_index"].iloc[order_rows],
+                hint="set dayfirst=True for dd/mm/yyyy data, or use ISO 8601",
             )
         df["timestamp"] = parsed
     if not rep.ok:
@@ -186,6 +235,8 @@ def check_frame(
 
     # W002 exact duplicates
     key = ["group", "username", "timestamp", "text"]
+    if "message_id" in df:
+        key.append("message_id")
     dup = df.duplicated(subset=key, keep="first")
     if dup.any():
         rep.add(
@@ -196,7 +247,10 @@ def check_frame(
         )
         df = df.loc[~dup]
 
-    # E008 duplicate message ids
+    # E008 duplicate message ids (an all-empty id column is ignored)
+    if "message_id" in df and df["message_id"].isna().all():
+        rep.add("I002", "info", "message_id column is empty; ids are generated")
+        df = df.drop(columns="message_id")
     if "message_id" in df:
         d = df.duplicated(subset=["group", "message_id"], keep=False) & df["message_id"].notna()
         if d.any():

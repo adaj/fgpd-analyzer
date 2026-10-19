@@ -32,7 +32,7 @@ def read_source(source: Source, **read_kw: Any) -> pd.DataFrame:
             df = pd.read_csv(p, dtype=str, keep_default_na=False, **kw)
         elif suf in (".xlsx", ".xlsm", ".xls"):
             try:
-                df = pd.read_excel(p, dtype=str, **read_kw)
+                df = pd.read_excel(p, dtype=str, keep_default_na=False, na_values=[], **read_kw)
             except ImportError as e:  # pragma: no cover
                 raise ConfigError("reading Excel needs: pip install 'fgpd-analyzer[xlsx]'") from e
         elif suf == ".parquet":

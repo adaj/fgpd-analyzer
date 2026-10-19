@@ -320,3 +320,153 @@ def test_dev_file_expectations(dev_data):
     assert elig[everyone] == "insufficient_data"
     by_group = {(i.code, i.group) for i in p.report.issues}
     assert ("W003", everyone) in by_group and ("W004", everyone) in by_group
+
+
+# ----------------------------------------------------------------- review fixes (M1 audit)
+
+
+@pytest.mark.parametrize(
+    "stamps,code",
+    [
+        (["2026-09-17 10:00:00-03", "2026-09-17 10:01:00-02"], None),  # DST change: both aware
+        (["2026-09-17 10:00:00-03", "2026-09-17 10:01:00"], "E006"),
+        (["2026-09-17 10:00:00 UTC", "2026-09-17 10:01:00"], "E006"),
+        (["17-09-2026 10:00", "17-09-2026 10:01"], None),  # not a tz offset
+    ],
+)
+def test_timezone_forms_never_raise(small_chat, stamps, code):
+    df = small_chat.iloc[:2].copy()
+    df["Timestamp"] = stamps
+    df = pd.concat([df, small_chat.iloc[2:]], ignore_index=True)
+    if code is None:
+        df.loc[2:, "Timestamp"] = df.loc[2:, "Timestamp"].str.replace("2026-09-17", "2026-09-18")
+        if stamps[0].endswith("-03"):
+            df.loc[2:, "Timestamp"] = df.loc[2:, "Timestamp"] + "-03"
+    codes = FGPDAnalyzer().validate_input(df).codes()
+    if code:
+        assert code in codes
+    else:
+        assert "E006" not in codes and "E004" not in codes
+
+
+def test_tz_aware_clock_times_stay_local(small_chat):
+    df = small_chat.copy()
+    df["Timestamp"] = df["Timestamp"] + "-03:00"
+    pg = FGPDAnalyzer().prepare(df).groups["g1"]
+    assert render_transcript(pg).startswith("u001 | 10:00:00")
+
+
+def test_empty_timestamp_reports_only_e003(small_chat):
+    df = small_chat.copy()
+    df.loc[3, "Timestamp"] = ""
+    codes = FGPDAnalyzer().validate_input(df).codes()
+    assert "E003" in codes and "E004" not in codes
+
+
+def test_child_logger_redacted(small_chat, caplog):
+    from fgpd_analyzer._logging import get_logger
+
+    FGPDAnalyzer(extra_names=["José Sentinela"]).prepare(small_chat)
+    with caplog.at_level(logging.DEBUG, logger="fgpd_analyzer"):
+        get_logger("fgpd_analyzer.runner").warning("user mariana and jose sentinela failed")
+    assert "mariana" not in caplog.text.lower() and "sentinela" not in caplog.text.lower()
+
+
+def test_nfd_username_matches_nfc_text():
+    import unicodedata
+
+    nfd = unicodedata.normalize("NFD", "José")
+    rows = [("g", nfd, f"10:0{i}:00", "o José falou isso") for i in range(4)]
+    rows += [("g", "Maria", f"10:0{i}:30", "concordo com José") for i in range(4)]
+    t = render_transcript(FGPDAnalyzer().prepare(make_chat(rows)).groups["g"])
+    assert "Jos" not in t and "́" not in t
+
+
+def test_names_from_other_groups_replaced(small_chat):
+    other = small_chat.copy()
+    other["Group"] = "g2"
+    other["Username"] = other["Username"].replace({"Mariana": "Beatriz", "Joao": "Carlos"})
+    other.loc[3, "Message"] = "a Mariana do outro grupo disse isso"
+    p = FGPDAnalyzer().prepare(pd.concat([small_chat, other], ignore_index=True))
+    t = render_transcript(p.groups["g2"])
+    assert "Mariana" not in t and "[NAME]" in t
+
+
+def test_extra_names_not_in_metadata():
+    c = AnalyzerConfig(extra_names=["Sentinelius"])
+    assert "Sentinelius" not in repr(c) and "Sentinelius" not in str(c.redacted())
+    assert c.fingerprint() != AnalyzerConfig().fingerprint()
+
+
+def test_duplicates_with_distinct_ids_kept(small_chat):
+    df = pd.concat([small_chat, small_chat.iloc[[3]]], ignore_index=True)
+    df["message_id"] = [f"x{i}" for i in range(len(df))]
+    assert len(FGPDAnalyzer().load(df)) == len(df)
+
+
+def test_excel_keeps_literal_na_messages(tmp_path, small_chat):
+    df = small_chat.copy()
+    df.loc[[1, 3, 4], "Message"] = ["NA", "null", "N/A"]
+    path = tmp_path / "c.xlsx"
+    df.to_excel(path, index=False)
+    assert len(FGPDAnalyzer().load(path)) == len(df)
+
+
+def test_pseudonym_collision():
+    rows = [("g", "S2", f"10:0{i}:00", "eu acho isso") for i in range(4)]
+    rows += [("g", "S1", f"10:0{i}:30", "eu acho aquilo") for i in range(4)]
+    p = FGPDAnalyzer().prepare(make_chat(rows))
+    assert "W014" in p.report.codes()
+    assert {u.speaker for u in p.groups["g"].units} == {"ST1", "ST2"}
+
+
+def test_column_problem_codes(small_chat):
+    rep = FGPDAnalyzer().validate_input(small_chat, columns={"text": "nope"})
+    assert rep.codes().count("E001") == 1 and "E002" not in rep.codes()
+    rep = FGPDAnalyzer().validate_input(small_chat.assign(texto=small_chat["Message"]))
+    assert "E002" in rep.codes()
+    assert "I001" in FGPDAnalyzer().validate_input(small_chat.assign(extra=1)).codes()
+
+
+def test_empty_message_id_column_falls_back(small_chat):
+    msgs = FGPDAnalyzer().load(small_chat.assign(message_id=""))
+    assert msgs["message_id"].iloc[0] == "m0001"
+
+
+def test_crlf_and_unit_id_width():
+    rows = [
+        ("g", "Ana" if i % 2 else "Bia", "10:00:00", f"linha\r\noutra {i}") for i in range(1001)
+    ]
+    df = make_chat(rows)
+    df["Timestamp"] = pd.date_range("2026-09-17 10:00", periods=1001, freq="2min").astype(str)
+    pg = FGPDAnalyzer(max_prompt_tokens=10**6).prepare(df).groups["g"]
+    t = render_transcript(pg)
+    assert len(t.split("\n")) == len(pg.units) == 1001
+    ids = [u.unit_id for u in pg.units]
+    assert ids == sorted(ids) and ids[0] == "u0001"
+
+
+def test_unit_gap_59s_and_ties():
+    rows = [
+        ("g", "Ana", "10:00:00", "um"),
+        ("g", "Ana", "10:00:59", "dois"),
+        ("g", "Bia", "10:00:59", "tres"),
+        ("g", "Ana", "10:00:59", "quatro"),
+    ]
+    rows += [("g", f"P{i % 2}", f"10:0{i + 2}:00", "x y z") for i in range(8)]
+    pg = FGPDAnalyzer().prepare(make_chat(rows)).groups["g"]
+    assert [len(u.message_ids) for u in pg.units[:3]] == [2, 1, 1]
+
+
+def test_pseudonyms_bijective(small_chat):
+    pg = FGPDAnalyzer().prepare(small_chat).groups["g1"]
+    m = pg.pseudonymizer.mapping
+    assert len(set(m.values())) == len(m)
+
+
+@pytest.mark.devdata
+def test_dev_file_default_config(dev_data):
+    p = FGPDAnalyzer().prepare(dev_data)
+    assert p.report.ok and len(p.eligible) == 7
+    codes = set(p.report.codes())
+    assert {"W003", "W004", "W006", "W009", "W013"} <= codes

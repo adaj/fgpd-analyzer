@@ -1,0 +1,74 @@
+# G4 engage: students engage with others' reasoning
+
+**Source.** "Helping Students Engage With Others' Reasoning": "students actually taking up the ideas and reasoning of other students and responding to them. This is when real discussion can take off" (Michaels & O'Connor, p. 338); "thinking with others" (p. 343). Related agent moves: agree/disagree, add-on, linking contributions (de Araujo et al., 2024, Table 1).
+
+**Definition.** A student takes a peer's reasoning as the object of their own unit and does something with it: agrees or disagrees with a reason, adds to it, applies it, offers a counterexample, compares or links it. G2 shows a student *got* a peer's idea; G4 shows they *did something with* the peer's reasoning.
+
+## Indicators
+
+| Code | Indicator |
+|---|---|
+| `reasoned_agree` | Agrees with the peer's idea and gives a reason. |
+| `reasoned_disagree` | Disagrees with the peer's idea and gives a reason. |
+| `add_on` | Adds to the peer's reasoning. |
+| `apply_or_counterexample` | Applies the peer's reasoning to a new case, or offers a counterexample. |
+| `compare_or_link` | Compares the peer's idea with another idea, or links it to the task question. |
+| `defend_concede_revise` | The original reasoner defends, concedes or revises after the peer's operation. |
+| `co_construct` | The students build a joint claim from each other's reasoning. |
+| `bare_agree` | Bare agreement or disagreement with a peer's idea, with no reason. |
+
+## Levels
+
+| Level | Conditions (all must hold) |
+|---|---|
+| 1 | Bare agreement or disagreement with a peer's idea ("yeah i agree", "no it's not"). |
+| 2 | One reasoned operation on a peer's reasoning: agree or disagree with a reason, add-on, application, counterexample, comparison. |
+| 3 | The original reasoner responds to that operation by defending, conceding or modifying their position: a 3-unit exchange. |
+| 4 | Several reasoned exchanges in which both students operate on each other's reasoning, ending in a revised or joint position, or in an explicitly reasoned disagreement. |
+
+## Structural constraints
+
+- An antecedent is required: the peer's unit whose reasoning is operated on. Its speaker differs from the speaker of at least one evidence unit. Without one, the stretch is not a G4 pattern.
+- Level 3 or 4 needs at least 2 evidence units, and at least one of them, after the first operation, comes from the antecedent's speaker. Together with the antecedent this is the 3-unit exchange.
+- Operating on the agent's own reasoning is not G4.
+
+## Examples (synthetic)
+
+Level 1:
+```
+u010 | S1 | é a B por causa da temperatura
+u011 | S2 | concordo
+```
+→ evidence u011; antecedent u010; indicators `bare_agree`.
+
+Level 2:
+```
+u021 | S1 | it's B because 37° was lightest
+u022 | S2 | i agree but also 0° stayed dark, so cold stops it too
+```
+→ evidence u022; antecedent u021; indicators `reasoned_agree`, `add_on`.
+
+Level 3:
+```
+u031 | S1 | é a B porque o 37 ficou mais claro
+u032 | S2 | mas o 20 também ficou quase claro, então não é só a temperatura do corpo
+u033 | S1 | é, talvez seja uma faixa de temperatura e não um valor exato
+```
+→ evidence u032, u033; antecedent u031; indicators `apply_or_counterexample`, `defend_concede_revise`.
+
+Level 4:
+```
+u041 | S1 | B because 37° was lightest
+u042 | S2 | but 20° was almost as light, so is it really about body temp?
+u043 | S1 | hm, maybe it's a range, not one exact temp
+u044 | S2 | yeah, works between 20 and 40, then breaks at 80
+u045 | S1 | ok let's write it as a range, from 20 to 40
+```
+→ evidence u042, u043, u044, u045; antecedent u041; indicators `apply_or_counterexample`, `defend_concede_revise`, `co_construct`.
+
+Not G4:
+```
+u051 | S1 | é a B por causa da temperatura
+u052 | S2 | eu coloquei C
+u053 | S1 | ok
+```
