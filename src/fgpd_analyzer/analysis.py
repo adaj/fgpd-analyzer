@@ -394,7 +394,10 @@ async def run_analysis(
         },
         "request_ids": [rid for r in results for rid in r.request_ids],
         "cache_keys": [r.cache_key for r in results if r.status == "ok"],
-        "cost_usd": round(total_cost, 6) if cost_known else None,
+        # only real API usage has a price (mock usage is synthetic)
+        "cost_usd": round(total_cost, 6)
+        if cost_known and getattr(backend, "name", "") == "anthropic"
+        else None,
         "price_table_version": PRICE_TABLE_VERSION,
         "qc": qc_counts,
         "consensus_qc": consensus_qc,

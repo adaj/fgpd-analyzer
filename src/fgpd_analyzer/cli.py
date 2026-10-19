@@ -23,6 +23,9 @@ app.add_typer(sheet_app, name="coding-sheet")
 app.add_typer(cache_app, name="cache")
 
 AgentOpt = Annotated[str, typer.Option("--agent-pattern", help="Username substring of agents.")]
+NameMapOpt = Annotated[
+    Path | None, typer.Option("--name-map", help="JSON key {real name: username}.")
+]
 ColOpt = Annotated[
     list[str] | None,
     typer.Option(  # noqa: UP007
@@ -63,9 +66,10 @@ def validate(
     agent_pattern: AgentOpt = "agent",
     column: ColOpt = None,
     exclude_flagged: bool = False,
+    name_map: NameMapOpt = None,
 ) -> None:
     """Validate an input file. No network."""
-    fa = _analyzer(agent_pattern=agent_pattern, exclude_flagged=exclude_flagged)
+    fa = _analyzer(agent_pattern=agent_pattern, exclude_flagged=exclude_flagged, name_map=name_map)
     rep = fa.validate_input(chats, columns=_columns(column))
     typer.echo(rep.to_text())
     if not rep.info.empty:
@@ -111,6 +115,7 @@ def analyze(
     exclude_flagged: bool = False,
     fmt: Annotated[str, typer.Option("--format")] = "csv",
     group: Annotated[list[str] | None, typer.Option("--group", help="Only these groups.")] = None,
+    name_map: NameMapOpt = None,
     cache: Annotated[str, typer.Option(help="use, refresh or off.")] = "use",
     cache_dir: Path | None = None,
 ) -> None:
@@ -130,6 +135,7 @@ def analyze(
             exclude_flagged=exclude_flagged,
             cache=cache,
             cache_dir=cache_dir,
+            name_map=name_map,
         )
     except (ConfigError, ValueError) as e:
         typer.echo(f"configuration error: {e}", err=True)
