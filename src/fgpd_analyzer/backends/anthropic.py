@@ -1,0 +1,84 @@
+"""Anthropic Messages API backend.
+
+Transport retries (429, 529, 5xx, timeouts, with `retry-after`) are delegated to
+the official SDK (`max_retries`). Content-level retries (max_tokens, refusal,
+unparseable output) are handled by the runner.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ..exceptions import BackendError, ConfigError
+from .base import LLMRequest, LLMResponse
+
+
+def _usage(u: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for k in (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        v = getattr(u, k, None)
+        out[k] = int(v or 0)
+    return out
+
+
+class AnthropicBackend:
+    name = "anthropic"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        timeout_s: float = 300.0,
+        max_retries: int = 5,
+        client: Any = None,
+    ) -> None:
+        # An explicit per-request timeout also disables the SDK's refusal of
+        # non-streaming calls with large max_tokens (our calls are short).
+        self.timeout_s = timeout_s
+        if client is not None:
+            self._client = client
+            return
+        try:
+            import anthropic
+        except ImportError as e:  # pragma: no cover
+            raise ConfigError("the anthropic package is required: pip install anthropic") from e
+        try:
+            self._client = anthropic.AsyncAnthropic(
+                api_key=api_key, timeout=timeout_s, max_retries=max_retries
+            )
+        except anthropic.AnthropicError as e:
+            raise ConfigError("no API key: pass api_key=... or set ANTHROPIC_API_KEY") from e
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        import anthropic
+
+        try:
+            msg = await self._client.messages.create(**request.api_kwargs(), timeout=self.timeout_s)
+        except anthropic.APIStatusError as e:
+            raise BackendError(
+                f"API error {e.status_code}",
+                status=e.status_code,
+                request_id=getattr(e, "request_id", None),
+            ) from e
+        except anthropic.APIConnectionError as e:
+            raise BackendError("connection error after retries") from e
+        text = "".join(
+            getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
+        )
+        return LLMResponse(
+            text=text,
+            stop_reason=str(msg.stop_reason),
+            usage=_usage(msg.usage),
+            request_id=getattr(msg, "_request_id", None) or getattr(msg, "id", None),
+            model=str(msg.model),
+        )
+
+    async def aclose(self) -> None:
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            await close()

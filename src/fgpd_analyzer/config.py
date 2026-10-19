@@ -95,7 +95,7 @@ class AnalyzerConfig(BaseModel):
     backend: Literal["anthropic", "mock", "replay"] = "anthropic"
     effort: Literal["low", "medium", "high"] = "medium"
     max_tokens: int = Field(16000, ge=1024, le=64000)
-    timeout_s: float = Field(120.0, gt=0)
+    timeout_s: float = Field(300.0, gt=0)
     max_retries: int = Field(5, ge=0, le=10)
     max_concurrency: int = Field(4, ge=1, le=64)
     requests_per_minute: int | None = Field(None, ge=1)

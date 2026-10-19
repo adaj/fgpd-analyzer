@@ -79,3 +79,16 @@ An agent acting as a human coder applied the codebook to one dyad and one triad 
 | G4 add-on without "because"; building further on a peer's addition; triads. | Add-on with new content = level 2; level 3 includes building further; level 4 says "at least two students". |
 | Real first names in agent messages (privacy). | `redact_vocatives=True` (default): words that agents use to address someone are replaced by `[NAME]` in every message of the input (W016). `name_candidates()` lists them for the researcher only. |
 | Some agent-account messages read as if a student wrote them. | Open question for Adelson (data, not codebook). |
+
+## M3: backend, cache, post-validation
+
+API facts re-checked against platform.claude.com on 2026-10-19: `output_config.format` (json_schema; enum, anyOf, `$ref`/`$defs`, `minItems` 0/1 supported; `minimum`, `maxItems`, `maxLength` not), `output_config.effort` (Haiku 5.5: low, medium [default], high, xhigh, max), prompt caching minimum 512 tokens for Haiku 5.5 with up to 4 breakpoints, refusals as `stop_reason: "refusal"`, Haiku 5.5 at $0.10 / $0.50 per MTok (cache write $0.125, read $0.01).
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D21 | Transport retries (429, 529, 5xx, timeouts, `retry-after`) are left to the official SDK (`max_retries`). The runner handles content retries: `max_tokens` (once, 2× budget, cap 32k), refusal (once), unparseable output or wrong goal (once). | The SDK already implements backoff with jitter correctly. | a second retry layer |
+| D22 | Every request carries an explicit timeout (default 300 s). | The SDK refuses non-streaming calls with large `max_tokens` unless a timeout is given; a 32k retry can take minutes. | streaming |
+| D23 | Evidence units outside the span are removed (flag `evidence_outside_span_removed`); the pattern is dropped only if no evidence is left. The design said "drop". | Keeps patterns whose span is off by one unit; the guarantee "evidence inside the span" holds either way. | dropping the whole pattern |
+| D24 | Human coding sheets go through the same validation with `apply=False`: everything is flagged, nothing is changed. | `coding-sheet check` reports exactly the rules applied to the model. | separate checker |
+| D25 | `MockBackend` produces deterministic synthetic patterns with run-to-run variation; `ReplayBackend` answers only from recorded responses. | Offline tests, examples and bit-identical replays. | — |
+| D26 | Prices live in `backends/pricing.py` with a version date. | Reported in run metadata. | TOML (needs Python 3.11) |
