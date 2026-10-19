@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fgpd-analyzer"
+version = "0.1.0.dev0"
+description = "LLM-based measurement of the Four Goals for Productive Discussion (FGPD) in student group chats"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Adelson de Araujo", email = "adelson.dias@gmail.com" }]
+keywords = ["CSCL", "learning analytics", "productive talk", "FGPD", "LLM", "discourse analysis"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "pandas>=2.1",
+  "numpy>=1.26",
+  "pydantic>=2.6",
+  "jinja2>=3.1",
+  "scipy>=1.11",
+  "anthropic>=1.0",
+  "platformdirs>=4.0",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+xlsx = ["openpyxl>=3.1"]
+parquet = ["pyarrow>=15"]
+dev = [
+  "pytest>=8",
+  "hypothesis>=6.100",
+  "respx>=0.21",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "pandas-stubs",
+  "openpyxl>=3.1",
+  "pyarrow>=15",
+]
+
+[project.scripts]
+fgpd = "fgpd_analyzer.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fgpd_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "live: calls the real Anthropic API (needs ANTHROPIC_API_KEY; budget-capped)",
+  "devdata: needs the private dev chats (FGPD_DEV_DATA points to the file outside the repo)",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+files = ["src/fgpd_analyzer"]
+plugins = ["pydantic.mypy"]
+# pandas-stubs 3.0 types several DataFrame constructors as Any; keep the rest of --strict.
+warn_return_any = false

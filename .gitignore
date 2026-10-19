@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+.coverage
+# never commit chat data or results computed from real data
+data/
+*.tsv
+!tests/fixtures/*.tsv
+results/
