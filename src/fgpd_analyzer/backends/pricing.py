@@ -10,7 +10,10 @@ PRICE_TABLE_VERSION = "2026-10-19"
 # max_prompt_tokens = 80k).
 PRICES: dict[str, dict[str, float]] = {
     "claude-haiku-5-5": {
-        "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20,
+        "input": 0.10,
+        "output": 0.50,
+        "cache_write_5m": 0.125,
+        "cache_write_1h": 0.20,
         "cache_read": 0.01,
     },
 }

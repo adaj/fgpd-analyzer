@@ -44,6 +44,7 @@ def parse_transcript_block(request: LLMRequest) -> list[tuple[str, str, bool, st
 
 class MockBackend:
     name = "mock"
+    cache_namespace = "mock"
 
     def __init__(
         self,
@@ -123,7 +124,11 @@ class MockBackend:
 class ReplayBackend:
     name = "replay"
 
-    def __init__(self, records: Path | str | Iterable[dict[str, Any]]) -> None:
+    def __init__(
+        self, records: Path | str | Iterable[dict[str, Any]], *, namespace: str = "anthropic"
+    ) -> None:
+        """`namespace`: the backend whose recorded responses are replayed."""
+        self.cache_namespace = namespace
         if isinstance(records, (str, Path)):
             lines = Path(records).read_text(encoding="utf-8").splitlines()
             items = [json.loads(x) for x in lines if x.strip()]

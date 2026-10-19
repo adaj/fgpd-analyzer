@@ -366,7 +366,12 @@ def test_cache_replay_is_identical(prepared, tmp_path):
     assert [r.patterns for r in first] == [r.patterns for r in again]
     jsonl = cache.export_jsonl(tmp_path / "rec.jsonl")
     replayed = _run(
-        fa, pg, ReplayBackend(jsonl), None, goals=("G1", "G2", "G3", "G4"), runs=(0, 1, 2)
+        fa,
+        pg,
+        ReplayBackend(jsonl, namespace="mock"),
+        None,
+        goals=("G1", "G2", "G3", "G4"),
+        runs=(0, 1, 2),
     )
     assert [r.patterns for r in replayed] == [r.patterns for r in first]
     (miss,) = _run(fa, pg, ReplayBackend([]))
@@ -460,9 +465,13 @@ def test_anthropic_backend_http_retries(prepared):
 
 def test_anthropic_backend_hard_failure(prepared):
     fa, pg = prepared
-    backend, calls = _backend([_err(400, "invalid_request_error")], max_retries=0)
+    backend, calls = _backend([_err(400, "invalid_request_error")] * 2, max_retries=0)
     (res,) = _run(fa, pg, backend)
-    assert res.status == "failed" and "400" in res.error and len(calls) == 1
+    # one retry with the string-id fallback schema, then failed
+    assert res.status == "failed" and "400" in res.error and len(calls) == 2
+    second = json.loads(calls[1].content)["output_config"]["format"]["schema"]
+    assert second["$defs"]["unit_id"] == {"type": "string"}
+    assert res.qc.counts["schema_fallback"] == 1
 
 
 def test_anthropic_backend_refusal_over_http(prepared):

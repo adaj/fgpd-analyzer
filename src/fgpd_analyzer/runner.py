@@ -23,7 +23,7 @@ from .exceptions import BackendError, ResponseParseError
 from .postprocess import QC, Pattern, parse_response, validate_patterns
 from .preprocess import PreparedGroup
 from .prompts.registry import PromptRegistry
-from .request import ChatPayload, build_request
+from .request import ChatPayload, build_payload, build_request
 
 log = get_logger(__name__)
 MAX_TOKENS_CAP = 32000
@@ -75,15 +75,59 @@ class Job:
     run_idx: int
 
 
-async def _one(job: Job, backend: LLMBackend, cache: ResponseCache | None, config: AnalyzerConfig,
-               registry: PromptRegistry, prompt_hash: str, sem: asyncio.Semaphore,
-               limiter: RateLimiter) -> CallResult:
+async def _one(
+    job: Job,
+    backend: LLMBackend,
+    cache: ResponseCache | None,
+    config: AnalyzerConfig,
+    registry: PromptRegistry,
+    prompt_hash: str,
+    sem: asyncio.Semaphore,
+    limiter: RateLimiter,
+) -> CallResult:
+    """Never raises: an unexpected error becomes a failed result for this call only."""
+    try:
+        return await _attempts(job, backend, cache, config, registry, prompt_hash, sem, limiter)
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "unexpected error group=%s goal=%s run=%d type=%s",
+            job.pg.group,
+            job.goal,
+            job.run_idx,
+            type(e).__name__,
+        )
+        return CallResult(
+            job.pg.group, job.goal, job.run_idx, "failed", error=f"unexpected: {type(e).__name__}"
+        )
+
+
+async def _attempts(
+    job: Job,
+    backend: LLMBackend,
+    cache: ResponseCache | None,
+    config: AnalyzerConfig,
+    registry: PromptRegistry,
+    prompt_hash: str,
+    sem: asyncio.Semaphore,
+    limiter: RateLimiter,
+) -> CallResult:
     res = CallResult(job.pg.group, job.goal, job.run_idx, "failed")
     mt = config.max_tokens
-    retried = {"max_tokens": False, "refusal": False, "parse": False}
+    retried = {"max_tokens": False, "refusal": False, "parse": False, "schema": False}
+    payload = job.payload
+    namespace = str(getattr(backend, "cache_namespace", getattr(backend, "name", "unknown")))
     while True:
-        req = build_request(job.payload, job.pg, registry, config, prompt_hash, job.goal,
-                            job.run_idx, max_tokens=mt)
+        req = build_request(
+            payload,
+            job.pg,
+            registry,
+            config,
+            prompt_hash,
+            job.goal,
+            job.run_idx,
+            max_tokens=mt,
+            namespace=namespace,
+        )
         res.cache_key = req.cache_key
         resp: LLMResponse | None = None
         if cache is not None and config.cache == "use":
@@ -94,9 +138,21 @@ async def _one(job: Job, backend: LLMBackend, cache: ResponseCache | None, confi
                 try:
                     resp = await backend.complete(req)
                 except BackendError as e:
+                    if e.status == 400 and not retried["schema"]:
+                        # DESIGN §8.2: the API may reject a large enum schema; retry
+                        # once with string ids (post-validation still checks every id).
+                        retried["schema"] = True
+                        payload = build_payload(job.pg, registry, config, string_ids=True)
+                        res.qc.counts["schema_fallback"] += 1
+                        continue
                     res.error = f"backend: {e}"
-                    log.warning("call failed group=%s goal=%s run=%d status=%s",
-                                job.pg.group, job.goal, job.run_idx, e.status)
+                    log.warning(
+                        "call failed group=%s goal=%s run=%d status=%s",
+                        job.pg.group,
+                        job.goal,
+                        job.run_idx,
+                        e.status,
+                    )
                     return res
             res.attempts += 1
             res.usage.append(resp.usage)
@@ -126,16 +182,21 @@ async def _one(job: Job, backend: LLMBackend, cache: ResponseCache | None, confi
                 continue
             res.error = f"parse: {e}"
             return res
-        res.patterns, res.qc = validate_patterns(raw, job.pg, job.goal, job.run_idx)
+        res.patterns, res.qc = validate_patterns(raw, job.pg, job.goal, job.run_idx, qc=res.qc)
         res.status = "ok"
         if cache is not None and config.cache != "off" and not resp.from_cache:
             cache.put(req.cache_key, resp)
         return res
 
 
-async def run_jobs(jobs: Sequence[Job], backend: LLMBackend, cache: ResponseCache | None,
-                   config: AnalyzerConfig, registry: PromptRegistry,
-                   prompt_hash: str) -> list[CallResult]:
+async def run_jobs(
+    jobs: Sequence[Job],
+    backend: LLMBackend,
+    cache: ResponseCache | None,
+    config: AnalyzerConfig,
+    registry: PromptRegistry,
+    prompt_hash: str,
+) -> list[CallResult]:
     sem = asyncio.Semaphore(config.max_concurrency)
     limiter = RateLimiter(config.requests_per_minute)
     tasks = [_one(j, backend, cache, config, registry, prompt_hash, sem, limiter) for j in jobs]

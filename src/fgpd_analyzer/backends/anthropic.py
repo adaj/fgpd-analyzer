@@ -28,6 +28,7 @@ def _usage(u: Any) -> dict[str, int]:
 
 class AnthropicBackend:
     name = "anthropic"
+    cache_namespace = "anthropic"
 
     def __init__(
         self,
@@ -67,16 +68,21 @@ class AnthropicBackend:
             ) from e
         except anthropic.APIConnectionError as e:
             raise BackendError("connection error after retries") from e
-        text = "".join(
-            getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
-        )
-        return LLMResponse(
-            text=text,
-            stop_reason=str(msg.stop_reason),
-            usage=_usage(msg.usage),
-            request_id=getattr(msg, "_request_id", None) or getattr(msg, "id", None),
-            model=str(msg.model),
-        )
+        except anthropic.APIError as e:
+            raise BackendError(f"API error: {type(e).__name__}") from e
+        try:
+            text = "".join(
+                getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
+            )
+            return LLMResponse(
+                text=text,
+                stop_reason=str(msg.stop_reason),
+                usage=_usage(msg.usage),
+                request_id=getattr(msg, "_request_id", None) or getattr(msg, "id", None),
+                model=str(msg.model),
+            )
+        except (AttributeError, TypeError) as e:
+            raise BackendError(f"malformed API response ({type(e).__name__})") from e
 
     async def aclose(self) -> None:
         close = getattr(self._client, "close", None)

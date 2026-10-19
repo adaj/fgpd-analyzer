@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from . import codebook as cb
@@ -30,7 +30,7 @@ _CACHE = {"type": "ephemeral"}
 
 def chat_facts(pg: PreparedGroup, config: AnalyzerConfig) -> str:
     lang = cb.language_name(config.chat_language) or "not specified"
-    students = ", ".join(s for s in pg.speakers if not s.startswith(pg.pseudonymizer.prefixes[1]))
+    students = ", ".join(dict.fromkeys(u.speaker for u in pg.units if not u.is_agent))
     return (
         f"Chat facts: {len(pg.units)} units ({pg.n_student_units} student units, "
         f"{len(pg.agent_unit_ids)} agent units); students: {students}; "
@@ -53,10 +53,15 @@ class ChatPayload:
 
 
 def build_payload(
-    pg: PreparedGroup, registry: PromptRegistry, config: AnalyzerConfig
+    pg: PreparedGroup,
+    registry: PromptRegistry,
+    config: AnalyzerConfig,
+    *,
+    string_ids: bool = False,
 ) -> ChatPayload:
+    """`string_ids=True` is the fallback schema without id enums (DESIGN §8.2)."""
     transcript = render_transcript(pg)
-    schema = build_schema(pg)
+    schema = build_schema(pg, max_enum_ids=0) if string_ids else build_schema(pg)
     block = f"<transcript>\n{transcript}\n</transcript>\n\n{chat_facts(pg, config)}"
     return ChatPayload(
         group=pg.group,
@@ -70,26 +75,12 @@ def build_payload(
     )
 
 
-def cache_key(
-    payload: ChatPayload,
-    config: AnalyzerConfig,
-    prompt_hash: str,
-    goal: str,
-    run_idx: int,
-    max_tokens: int,
-) -> str:
-    key = {
-        "model": config.model,
-        "effort": config.effort,
-        "max_tokens": max_tokens,
-        "prompt_set_hash": prompt_hash,
-        "schema": SCHEMA_VERSION,
-        "schema_hash": payload.schema_hash,
-        "chat_hash": payload.chat_hash,
-        "goal": goal,
-        "run_idx": run_idx,
-    }
-    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+def cache_key(api_kwargs: dict[str, Any], namespace: str, run_idx: int) -> str:
+    """Hash of the exact request (with the configured, not the escalated,
+    max_tokens), the backend namespace and the run index. Anything that changes
+    what is sent changes the key by construction."""
+    payload = {"request": api_kwargs, "namespace": namespace, "run_idx": run_idx}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def build_request(
@@ -101,10 +92,11 @@ def build_request(
     goal: str,
     run_idx: int,
     max_tokens: int | None = None,
+    namespace: str = "anthropic",
 ) -> LLMRequest:
     mt = max_tokens or config.max_tokens
     task = cb.render_prompt(registry, "task_detect", config, goal=goal)
-    return LLMRequest(
+    req = LLMRequest(
         model=config.model,
         system=[{"type": "text", "text": payload.system_text, "cache_control": _CACHE}],
         messages=[
@@ -125,7 +117,9 @@ def build_request(
         group=pg.group,
         goal=goal,
         run_idx=run_idx,
-        cache_key=cache_key(payload, config, prompt_hash, goal, run_idx, mt),
         student_unit_ids=tuple(pg.student_unit_ids),
         agent_unit_ids=tuple(pg.agent_unit_ids),
     )
+    base = {**req.api_kwargs(), "max_tokens": config.max_tokens}
+    key_extra = {"prompt_set_hash": prompt_hash, "schema_version": SCHEMA_VERSION}
+    return replace(req, cache_key=cache_key({**base, **key_extra}, namespace, run_idx))

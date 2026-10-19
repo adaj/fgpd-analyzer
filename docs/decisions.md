@@ -92,3 +92,35 @@ API facts re-checked against platform.claude.com on 2026-10-19: `output_config.f
 | D24 | Human coding sheets go through the same validation with `apply=False`: everything is flagged, nothing is changed. | `coding-sheet check` reports exactly the rules applied to the model. | separate checker |
 | D25 | `MockBackend` produces deterministic synthetic patterns with run-to-run variation; `ReplayBackend` answers only from recorded responses. | Offline tests, examples and bit-identical replays. | — |
 | D26 | Prices live in `backends/pricing.py` with a version date. | Reported in run metadata. | TOML (needs Python 3.11) |
+
+### M3 audit (independent reviewer): 4 major and 7 minor findings, all fixed
+
+| # | Finding | Fix |
+|---|---|---|
+| R12 (major) | After a `max_tokens` retry, the response was cached under the escalated key, so reruns called the API again and replays failed. | The cache key always uses the configured `max_tokens`. |
+| R13 (major) | The cache key did not include the backend, so mock responses could be served to a real run. | The key includes the backend namespace (`anthropic`, `mock`); `ReplayBackend` replays a named namespace. |
+| R14 (major) | Merging overlapping patterns skipped the structural rules and could shrink evidence. | The merged pattern is re-checked; evidence is never removed; the antecedent is the first that is not evidence; if the union breaks a rule, the stronger pattern is kept (`overlap_dropped`). |
+| R15 (major) | A malformed 200 response aborted the whole batch. | All API errors become `BackendError`; any unexpected error fails only its own call. |
+| R16 | The key ignored the chat-facts line. | The key is the hash of the exact request, so everything sent is in it by construction. |
+| R17 | With `pseudonymize=False`, agents were listed as students in the chat facts. | Uses the unit role. |
+| R18 | A same-speaker antecedent was accepted for G1/G3. | Nulled and flagged (`antecedent_same_speaker_nulled`). |
+| R19 | Report-only mode missed nested overlaps; displayed unknown ids as "None"; read 3.0 as 0. | Running maximum; raw ids kept; float levels accepted. |
+| R20 | No schema fallback when the API rejects the enum schema. | On a 400, one retry with string ids (`schema_fallback`). |
+| R21 | Missing tests. | Added (flags, upper-case ids, three-way merges, cache modes, malformed bodies). |
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D27 | The G3 rule "an evidence unit preceded in the span by a press" is checked in code only as "there is an earlier unit in the span"; whether it is a press is the coder's judgement. | Code cannot read meaning. | keyword detection |
+
+## M4: consensus, influence, outputs, CLI
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D28 | Consensus patterns go through the same post-validation again (structural rules, merge of overlaps created by the medians; flag `consensus_merge`). | The median span or lower-median level can break a rule that every member satisfied. | trusting the members |
+| D29 | `support ≥ 0.5` is applied literally: with 2 successful runs, a pattern found in 1 counts. | DESIGN §5. Groups with failed runs are `partial` and visible. | requiring 2 runs |
+| D30 | Agent unit for `temporal_only`: the latest agent unit at or before the pattern start, else the earliest inside. `agent_lag_s` = first evidence unit after the agent minus the agent unit. | DESIGN §11. | — |
+| D31 | Results keep internal tables (`units`, `groups`, `calls`, `consensus`) so that `patterns`, `frequencies` and `timeseries` are recomputed on load; changing lag, rule or bin width needs no API call. | U5, §11. | storing only final tables |
+| D32 | `run_patterns` stores every run's validated patterns; `freq_run_mean`/`freq_run_sd` are computed from them. | Run-to-run dispersion is part of the measurement. | — |
+| D33 | Cost estimate: one cache write per chat, cache reads for the other 4·n_runs − 1 calls, 1,500–4,000 output tokens per call. Dev set (6 groups, 3 runs): about $0.10 (range $0.07–$0.16). | Output (mostly thinking) dominates. | — |
+| D34 | The CLI exits 0 ok, 2 validation errors, 3 backend failure (every call failed), 4 partial (some calls failed) or problems found by `coding-sheet check`. | DESIGN §7. | — |
+| D35 | Golden replay files from real responses are recorded in M5 (they need real model output); M4 covers the same invariants with the mock backend and property tests. | No real responses exist yet. | synthetic "golden" files |

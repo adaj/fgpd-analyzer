@@ -153,3 +153,40 @@ def read_coding_sheet(path: Path) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(out)
+
+
+def check_coding_sheet(prep: PreparedInput, path: Path) -> pd.DataFrame:
+    """Run the model's post-validation in report-only mode on a filled workbook.
+    Returns one row per flagged pattern (empty when everything is fine)."""
+    from .postprocess import QC, validate_patterns
+
+    coded = read_coding_sheet(path)
+    rows = []
+    for (group, goal), df in coded.groupby(["group", "goal"], sort=False):
+        df = df[df["level"].notna() | df["start_id"].notna()]
+        if df.empty:
+            continue
+        if group not in prep.groups:
+            rows.append({"group": group, "goal": goal, "row": None, "problems": "unknown group"})
+            continue
+        raw = df[
+            [
+                "start_id",
+                "end_id",
+                "evidence_ids",
+                "antecedent_id",
+                "indicators",
+                "level",
+                "agent_uptake_id",
+                "justification",
+            ]
+        ].to_dict(orient="records")
+        pats, _ = validate_patterns(
+            raw, prep.groups[group], str(goal), 0, source="human", qc=QC(), apply=False
+        )
+        for i, p in enumerate(pats):
+            if p.qc_flags:
+                rows.append(
+                    {"group": group, "goal": goal, "row": i + 1, "problems": ", ".join(p.qc_flags)}
+                )
+    return pd.DataFrame(rows, columns=["group", "goal", "row", "problems"])

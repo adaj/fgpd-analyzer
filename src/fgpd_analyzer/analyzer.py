@@ -34,8 +34,12 @@ class FGPDAnalyzer:
         *,
         model: str | None = None,
         prompts: PromptRegistry | Mapping[str, str | Path] | Path | str | None = None,
+        backend: Any = None,
         **overrides: Any,
     ) -> None:
+        if isinstance(backend, str):  # "anthropic" | "mock" | "replay"
+            overrides["backend"] = backend
+            backend = None
         base = config or AnalyzerConfig()
         if model is not None:
             overrides["model"] = model
@@ -43,6 +47,7 @@ class FGPDAnalyzer:
             self.config = base.replace(**overrides) if overrides else base
         except (TypeError, ValueError) as e:
             raise ConfigError(str(e)) from e
+        self._backend = backend
         if isinstance(prompts, PromptRegistry):
             self.prompts = prompts
         elif prompts is not None:
@@ -173,4 +178,110 @@ class FGPDAnalyzer:
         prep.report.raise_if_errors()
         return export_coding_sheet(
             prep, Path(path), groups=groups, prompt_set_hash=self.prompt_set_hash, coder=coder
+        )
+
+    # ------------------------------------------------------------------ analysis
+    def _make_backend(self) -> Any:
+        if self._backend is not None:
+            return self._backend
+        c = self.config
+        if c.backend == "mock":
+            from .backends.mock import MockBackend
+
+            return MockBackend()
+        if c.backend == "replay":
+            raise ConfigError(
+                "backend='replay' needs a ReplayBackend instance: backend=ReplayBackend(path)"
+            )
+        from .backends.anthropic import AnthropicBackend
+
+        key = c.api_key.get_secret_value() if c.api_key else None
+        return AnthropicBackend(key, timeout_s=c.timeout_s, max_retries=c.max_retries)
+
+    def _select(self, prep: PreparedInput, groups: list[str] | None) -> list[str]:
+        if groups is None:
+            return prep.eligible
+        missing = [g for g in groups if g not in prep.groups]
+        if missing:
+            raise KeyError(f"groups not found: {missing}")
+        return [g for g in groups if prep.groups[g].eligibility == "eligible"]
+
+    def estimate_cost(
+        self,
+        source: Any,
+        *,
+        columns: Columns = None,
+        groups: list[str] | None = None,
+        **read_kw: Any,
+    ) -> Any:
+        """Cost estimate without any network call."""
+        from .analysis import estimate
+
+        prep = self.prepare(source, columns=columns, **read_kw)
+        prep.report.raise_if_errors()
+        return estimate(prep, self.prompts, self.config, self._select(prep, groups))
+
+    async def analyze_async(
+        self,
+        source: Any,
+        *,
+        columns: Columns = None,
+        groups: list[str] | None = None,
+        raise_on_partial: bool = False,
+        **read_kw: Any,
+    ) -> Any:
+        from . import __version__
+        from .analysis import run_analysis, sha256_of_source
+        from .cache import ResponseCache
+        from .exceptions import PartialResultsError
+
+        prep = self.prepare(source, columns=columns, **read_kw)
+        prep.report.raise_if_errors()
+        selected = self._select(prep, groups)
+        cache = None if self.config.cache == "off" else ResponseCache(self.config.cache_dir)
+        try:
+            res = await run_analysis(
+                prep,
+                selected,
+                self.prompts,
+                self.config,
+                self._make_backend(),
+                cache,
+                source_sha256=sha256_of_source(source),
+                package_version=__version__,
+            )
+        finally:
+            if cache is not None:
+                cache.close()
+        if raise_on_partial and (res.calls["status"] != "ok").any():
+            raise PartialResultsError("some group x goal x run calls did not succeed", res)
+        return res
+
+    def analyze(
+        self,
+        source: Any,
+        *,
+        columns: Columns = None,
+        groups: list[str] | None = None,
+        dry_run: bool = False,
+        raise_on_partial: bool = False,
+        **read_kw: Any,
+    ) -> Any:
+        """Validate, call the model for every eligible group x goal x run, and return
+        `FGPDResults`. With `dry_run=True`, nothing is sent: the validation report and
+        the cost estimate are returned instead."""
+        from .analysis import run_coro
+
+        if dry_run:
+            prep = self.prepare(source, columns=columns, **read_kw)
+            prep.report.raise_if_errors()
+            return {
+                "validation": prep.report,
+                "estimate": self.estimate_cost(source, columns=columns, groups=groups, **read_kw),
+                "groups": self._select(prep, groups),
+            }
+        return run_coro(
+            self.analyze_async(
+                source, columns=columns, groups=groups, raise_on_partial=raise_on_partial, **read_kw
+            )
         )
