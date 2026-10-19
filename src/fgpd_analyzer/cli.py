@@ -229,6 +229,21 @@ def cache_info() -> None:
     typer.echo(f"{c.path}: {len(c)} responses")
 
 
+@cache_app.command("export")
+def cache_export(path: Path, results: Path | None = None) -> None:
+    """Write cached responses as JSONL for ReplayBackend (only those of RESULTS, if given)."""
+    import json
+
+    from .cache import ResponseCache
+
+    keys = None
+    if results is not None:
+        meta = json.loads((results / "run_metadata.json").read_text(encoding="utf-8"))
+        keys = set(meta.get("cache_keys", []))
+    out = ResponseCache().export_jsonl(path, keys)
+    typer.echo(f"wrote {out}")
+
+
 @cache_app.command("clear")
 def cache_clear() -> None:
     from .cache import ResponseCache

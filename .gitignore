@@ -13,3 +13,5 @@ data/
 *.tsv
 !tests/fixtures/*.tsv
 results/
+.env
+*.jsonl
