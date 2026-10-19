@@ -132,6 +132,9 @@ class AnalyzerConfig(BaseModel):
     extra_names: tuple[str, ...] = Field((), repr=False)
     min_name_len_in_text: int = Field(3, ge=1)
     redact_vocatives: bool = True
+    # researcher's name key: real name -> username in the data (e.g. {"rodrigo": "J"})
+    name_map: dict[str, str] = Field(default_factory=dict, repr=False)
+    fuzzy_names: bool = True
 
     # languages
     chat_language: str | None = None
@@ -170,6 +173,25 @@ class AnalyzerConfig(BaseModel):
             return (v,)
         return tuple(str(x) for x in v)
 
+    @field_validator("name_map", mode="before")
+    @classmethod
+    def _name_map(cls, v: Any) -> dict[str, str]:
+        if v is None:
+            return {}
+        if isinstance(v, (str, Path)):
+            import json as _json
+
+            text = Path(v).read_text(encoding="utf-8")
+            try:
+                v = _json.loads(text)
+            except ValueError:
+                import ast
+
+                v = ast.literal_eval(text)  # also accepts a printed Python dict
+        if not isinstance(v, Mapping):
+            raise ConfigError("name_map must be a dict {real name: username} or a JSON file")
+        return {str(k): str(val) for k, val in v.items()}
+
     @field_validator("api_key", mode="before")
     @classmethod
     def _key(cls, v: Any) -> Any:
@@ -201,12 +223,17 @@ class AnalyzerConfig(BaseModel):
         payload["extra_names_sha"] = hashlib.sha256(
             "\x00".join(sorted(self.extra_names)).encode()
         ).hexdigest()
+        payload["name_map_sha"] = hashlib.sha256(
+            json.dumps(sorted(self.name_map.items())).encode()
+        ).hexdigest()
+        payload["fuzzy_names"] = self.fuzzy_names
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
     def redacted(self) -> dict[str, Any]:
         d = self.model_dump(mode="json")
         d["api_key"] = "***" if self.api_key else None
         d["extra_names"] = f"<{len(self.extra_names)} name(s)>"
+        d["name_map"] = f"<{len(self.name_map)} name(s)>"
         return d
 
 

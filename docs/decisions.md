@@ -145,3 +145,19 @@ API facts re-checked against platform.claude.com on 2026-10-19: `output_config.f
 | # | Decision | Reason | Rejected |
 |---|---|---|---|
 | D36 | `FGPD_*` environment variables and `fgpd.toml` (DESIGN §6 precedence) are deferred to v0.2; the CLI takes options and the API takes arguments. | Not needed for the dev run. | — |
+
+## Name key (2026-10-19, user request)
+
+Adelson chose a deterministic name key over an LLM-based name detector (an LLM pass would send the raw names to the API, which pseudonymization is meant to avoid).
+
+| # | Decision | Reason | Rejected |
+|---|---|---|---|
+| D37 | `name_map` (real name → username in the data; dict, JSON file or a printed Python dict) replaces every known variant of a real name inside the text: the full name, each part of a multi-part name ("joão pedro" → "joão"), and with `fuzzy_names=True` a single-word name with one extra letter, or one missing letter for names of 7+ letters ("fraier" → "fraifer"). Substitutions never match. | Catches typos and first names without a dictionary. "bianca" minus one letter is "banca", a common word, hence the 7-letter floor. | LLM detection; edit distance with substitutions |
+| D38 | A name maps to the pseudonym of that student in the current group; anyone else (another group, unknown, a name part shared by two people) becomes `[NAME]`. Vocatives found in agent messages that are one letter from a known name take that person's pseudonym. | Keeps "who addressed whom" inside the group. | `[NAME]` for everything |
+| D39 | Fuzzy replacements are counted (W017); `name_map` appears in metadata only as a count; its hash enters the fingerprint. | Review and privacy. | — |
+
+Dev data with the key: 0 real names left in the transcripts (13 caught as agent vocatives, 1 typo caught by fuzzy matching).
+
+## Dev data: Wizard of Oz (stated by Adelson, 2026-10-19)
+
+The dev chats come from a study in which one student in each group played the agent and had to use predefined phrases. Messages of that account are all treated as agent context, including the few the student typed freely.

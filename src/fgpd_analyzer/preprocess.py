@@ -262,9 +262,18 @@ def prepare_group(
         msgs["message_id"] = [f"m{i:04d}" for i in range(1, len(msgs) + 1)]
     msgs["seq"] = range(1, len(msgs) + 1)
 
-    ps = Pseudonymizer(min_len=config.min_name_len_in_text, extra_names=config.extra_names)
-    ps.fit(msgs["username"].astype(str), msgs["is_agent"], other_names=other_names)
-    redactor.register(*ps.mapping.keys(), *config.extra_names)
+    ps = Pseudonymizer(
+        min_len=config.min_name_len_in_text,
+        extra_names=config.extra_names,
+        fuzzy=config.fuzzy_names,
+    )
+    ps.fit(
+        msgs["username"].astype(str),
+        msgs["is_agent"],
+        other_names=other_names,
+        aliases=config.name_map or None,
+    )
+    redactor.register(*ps.mapping.keys(), *config.extra_names, *config.name_map.keys())
     if config.pseudonymize and ps.collision:
         report.add(
             "W014",
@@ -279,6 +288,14 @@ def prepare_group(
         msgs["speaker"] = msgs["username"].astype(str)
         texts = [str(t) for t in msgs["text"]]
 
+    if ps.fuzzy_hits:
+        report.add(
+            "W017",
+            "warning",
+            f"{ps.fuzzy_hits} word(s) one letter away from a known name were replaced",
+            group=str(group),
+            hint="set fuzzy_names=False to replace exact names only",
+        )
     units, unit_of_msg = _build_units(msgs, texts, config.unit_gap.total_seconds())
     msgs["unit_id"] = unit_of_msg
     t0 = msgs["timestamp"].iloc[0]

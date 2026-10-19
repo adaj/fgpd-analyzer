@@ -494,3 +494,65 @@ def test_agent_vocatives_redacted_everywhere():
         FGPDAnalyzer(redact_vocatives=False).prepare(make_chat(rows)).groups["g"]
     )
     assert "Rodrigo" in t2
+
+
+# ----------------------------------------------------------------- name key (name_map)
+
+
+def _named_chat():
+    rows = [
+        ("g", "agente 1", "10:00:00", "gabriel, como suas ideias se encaixam com as do joão?"),
+        ("g", "agente 1", "10:00:10", "fraier, você acha que pode ajudar fenanda?"),
+        *[
+            ("g", "A" if i % 2 else "B", f"10:0{i + 1}:00", "o joão pedro e a berna acham que sim")
+            for i in range(8)
+        ],
+        ("g", "C", "10:09:30", "a banca falou com o gabriel e com a bianca"),
+    ]
+    return make_chat(rows)
+
+
+NAME_MAP = {
+    "gabriel": "A",
+    "joão pedro": "B",
+    "fraifer": "C",
+    "fernanda": "Z",
+    "bianca": "Y",
+    "berna_erika": "B",
+}
+
+
+def test_name_map_variants_and_fuzzy(tmp_path):
+    fa = FGPDAnalyzer(name_map=NAME_MAP)
+    pg = fa.prepare(_named_chat()).groups["g"]
+    m = pg.pseudonymizer.mapping
+    t = render_transcript(pg)
+    for real in ("gabriel", "joão", "pedro", "fraier", "fenanda", "bianca", "berna"):
+        assert real not in t.lower(), real
+    assert f"{m['A']}, como suas ideias" in t  # exact name -> speaker pseudonym
+    assert f"as do {m['B']}?" in t  # first name of "joão pedro"
+    assert f"{m['C']}, você acha" in t  # one letter missing (fuzzy)
+    assert "ajudar [NAME]?" in t  # fuzzy name of someone not in group
+    assert "a banca falou" in t  # a substitution is not a match
+    extra = pd.concat(
+        [_named_chat(), make_chat([("g", "C", "10:09:50", "falei com o gabriell")])],
+        ignore_index=True,
+    )
+    p = fa.prepare(extra)
+    assert "W017" in p.report.codes()  # one extra letter, found in student text
+    assert "gabriell" not in render_transcript(p.groups["g"])
+
+
+def test_name_map_from_file_and_privacy(tmp_path):
+    path = tmp_path / "key.txt"
+    path.write_text(repr(NAME_MAP), encoding="utf-8")  # a printed Python dict
+    c = AnalyzerConfig(name_map=path)
+    assert c.name_map["gabriel"] == "A"
+    assert "gabriel" not in repr(c) and "gabriel" not in str(c.redacted())
+    assert c.fingerprint() != AnalyzerConfig().fingerprint()
+    t = render_transcript(
+        FGPDAnalyzer(name_map=NAME_MAP, fuzzy_names=False, redact_vocatives=False)
+        .prepare(_named_chat())
+        .groups["g"]
+    )
+    assert "fraier" in t  # exact matching only
