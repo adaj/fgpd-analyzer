@@ -1,9 +1,17 @@
-"""Async fan-out of the group × goal × run calls (DESIGN §4, §8.3 retries).
+"""Asynchronous execution of the group × goal × run calls (DESIGN §4, §8.3).
 
-Transport errors (429/529/5xx/timeouts) are retried by the SDK. Here:
-- `max_tokens`: one retry with twice the budget (capped at 32k), then `failed`;
-- `refusal`: one fresh retry, then `refused` (never imputed as zero);
-- unparseable output or wrong goal: one fresh retry, then `failed`.
+The runs stage of the pipeline (input → units → prompts → requests → **runs**
+→ post-validation → consensus → ...). Each call is looked up in the cache,
+otherwise sent to the backend under a concurrency limit and an optional rate
+limit; its response is parsed and post-validated. Transport errors (429, 529,
+5xx, timeouts) are retried by the SDK. Content-level retries are done here:
+
+- ``max_tokens``: one retry with twice the budget (capped at
+  `MAX_TOKENS_CAP` = 64,000 tokens), then ``failed``;
+- refusal: one fresh retry, then ``refused`` (never imputed as zero);
+- unparseable output or wrong goal: one fresh retry, then ``failed``;
+- HTTP 400 (schema rejected): one retry with the string-id fallback schema.
+
 Only successful responses are cached.
 """
 
@@ -26,12 +34,39 @@ from .prompts.registry import PromptRegistry
 from .request import ChatPayload, build_payload, build_request
 
 log = get_logger(__name__)
+#: Upper bound of the escalated ``max_tokens`` budget after a cut-off response.
 MAX_TOKENS_CAP = 64000
 CallStatus = Literal["ok", "failed", "refused"]
 
 
 @dataclass
 class CallResult:
+    """Outcome of one group × goal × run call.
+
+    Attributes
+    ----------
+    group, goal : str
+    run_idx : int
+        Run index (0-based).
+    status : {"ok", "failed", "refused"}
+    patterns : list of Pattern
+        Validated patterns (empty unless ``status == "ok"``).
+    qc : QC
+        Counts of post-validation corrections and fallbacks.
+    usage : list of dict
+        Token usage of every API attempt (cached responses add none).
+    request_ids : list of str
+        API request ids of every attempt.
+    attempts : int
+        Number of backend calls made (0 when served from the cache).
+    from_cache : bool
+        True if the final response came from the cache.
+    error : str
+        Reason for a non-ok status (no chat content).
+    cache_key : str
+        Cache key of the last request.
+    """
+
     group: str
     goal: str
     run_idx: int
@@ -47,7 +82,13 @@ class CallResult:
 
 
 class RateLimiter:
-    """At most `rpm` request starts per rolling minute."""
+    """Allow at most `rpm` request starts per rolling minute.
+
+    Parameters
+    ----------
+    rpm : int or None
+        Limit; None or 0 disables it.
+    """
 
     def __init__(self, rpm: int | None) -> None:
         self.rpm = rpm
@@ -55,6 +96,7 @@ class RateLimiter:
         self._lock = asyncio.Lock()
 
     async def wait(self) -> None:
+        """Wait until another request may start, then record its start."""
         if not self.rpm:
             return
         async with self._lock:
@@ -69,6 +111,8 @@ class RateLimiter:
 
 @dataclass(frozen=True)
 class Job:
+    """One call to make: a prepared group, its payload, a goal and a run index."""
+
     pg: PreparedGroup
     payload: ChatPayload
     goal: str
@@ -85,8 +129,11 @@ async def _one(
     sem: asyncio.Semaphore,
     limiter: RateLimiter,
 ) -> CallResult:
-    """Never raises: an unexpected error becomes a failed result for this call only
-    (usage of earlier attempts is kept)."""
+    """Run one job; never raises.
+
+    An unexpected error becomes a failed result for this call only; the usage
+    of earlier attempts is kept.
+    """
     res = CallResult(job.pg.group, job.goal, job.run_idx, "failed")
     try:
         return await _attempts(
@@ -116,6 +163,7 @@ async def _attempts(
     sem: asyncio.Semaphore,
     limiter: RateLimiter,
 ) -> CallResult:
+    """Try one job with the cache, the fallback schema and the content retries."""
     mt = config.max_tokens
     retried = {"max_tokens": False, "refusal": False, "parse": False, "schema": False}
     payload = job.payload
@@ -214,6 +262,26 @@ async def run_jobs(
     registry: PromptRegistry,
     prompt_hash: str,
 ) -> list[CallResult]:
+    """Run every job concurrently and return one result per job, in job order.
+
+    Parameters
+    ----------
+    jobs : sequence of Job
+    backend : LLMBackend
+    cache : ResponseCache or None
+        None disables caching.
+    config : AnalyzerConfig
+        Uses ``max_tokens``, ``cache``, ``max_concurrency`` and
+        ``requests_per_minute``.
+    registry : PromptRegistry
+    prompt_hash : str
+        Prompt-set hash for the cache keys.
+
+    Returns
+    -------
+    list of CallResult
+        Failures are results with a non-ok status, never exceptions.
+    """
     sem = asyncio.Semaphore(config.max_concurrency)
     limiter = RateLimiter(config.requests_per_minute)
     tasks = [_one(j, backend, cache, config, registry, prompt_hash, sem, limiter) for j in jobs]

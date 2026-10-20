@@ -1,4 +1,8 @@
-"""Anthropic Messages API backend.
+"""Anthropic Messages API backend, the default backend of real analyses.
+
+Runs stage of the pipeline (input → units → prompts → requests → **runs** →
+post-validation → ...): it sends one `LLMRequest` to the Messages API with the
+official asynchronous SDK and returns the text, stop reason and token usage.
 
 Transport retries (429, 529, 5xx, timeouts, with `retry-after`) are delegated to
 the official SDK (`max_retries`). Content-level retries (max_tokens, refusal,
@@ -14,6 +18,7 @@ from .base import LLMRequest, LLMResponse
 
 
 def _usage(u: Any) -> dict[str, int]:
+    """Convert the SDK usage object to a dict of the four token counts (missing → 0)."""
     out: dict[str, int] = {}
     for k in (
         "input_tokens",
@@ -27,6 +32,40 @@ def _usage(u: Any) -> dict[str, int]:
 
 
 class AnthropicBackend:
+    """Backend that calls the Anthropic Messages API.
+
+    Parameters
+    ----------
+    api_key : str, optional
+        API key; None reads ``$ANTHROPIC_API_KEY``.
+    timeout_s : float, default 300.0
+        Timeout per request, in seconds. An explicit timeout also lifts the
+        SDK's refusal of non-streaming calls with a large ``max_tokens``.
+    max_retries : int, default 5
+        Transport retries done by the SDK (429, 529, 5xx, timeouts, honouring
+        ``retry-after``).
+    client : object, optional
+        A ready ``anthropic.AsyncAnthropic``-like client, e.g. for tests;
+        `api_key` and `max_retries` are then ignored.
+
+    Attributes
+    ----------
+    name : str
+        ``"anthropic"``.
+    cache_namespace : str
+        ``"anthropic"``.
+
+    Raises
+    ------
+    ConfigError
+        If the ``anthropic`` package is missing or no API key is found.
+
+    Examples
+    --------
+    >>> from fgpd_analyzer.backends.anthropic import AnthropicBackend
+    >>> fa = FGPDAnalyzer(backend=AnthropicBackend(timeout_s=600))  # doctest: +SKIP
+    """
+
     name = "anthropic"
     cache_namespace = "anthropic"
 
@@ -56,6 +95,23 @@ class AnthropicBackend:
             raise ConfigError("no API key: pass api_key=... or set ANTHROPIC_API_KEY") from e
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Send one request and return its response.
+
+        Parameters
+        ----------
+        request : LLMRequest
+
+        Returns
+        -------
+        LLMResponse
+            Text blocks concatenated; usage as four token counts.
+
+        Raises
+        ------
+        BackendError
+            For an API status error (``status`` set), a connection error after
+            the SDK retries, any other SDK error, or a malformed response.
+        """
         import anthropic
 
         try:
@@ -85,6 +141,7 @@ class AnthropicBackend:
             raise BackendError(f"malformed API response ({type(e).__name__})") from e
 
     async def aclose(self) -> None:
+        """Close the underlying HTTP client."""
         close = getattr(self._client, "close", None)
         if close is not None:
             await close()

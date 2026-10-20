@@ -1,5 +1,13 @@
-"""Deterministic preprocessing (DESIGN §2): roles, message ids, Student
-Contribution Units (SCUs), pseudonyms and eligibility. No LLM involved."""
+"""Deterministic preprocessing (DESIGN §2): roles, units, pseudonyms, eligibility.
+
+Third stage of the pipeline (input → validation → **units** → prompts →
+requests → runs → post-validation → consensus → influence → outputs). For each
+group of the cleaned table it decides who is an agent, assigns message ids,
+pseudonymizes speakers and text, merges consecutive messages of one student
+into Student Contribution Units (SCUs), and decides whether the group is
+eligible for analysis. No LLM is involved, and the result is identical for
+human coders and for the model.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +25,10 @@ from .validation import ValidationReport
 Eligibility = Literal["eligible", "insufficient_data", "too_long", "excluded"]
 
 # Rough size of the cached prompt prefix (system + codebook) until M2 measures it.
+#: Tokens added to the transcript estimate for the system prompt and codebook.
 PROMPT_OVERHEAD_TOKENS = 6000
-CHARS_PER_TOKEN = 3.0  # conservative for PT/NL chat text
+#: Characters per token used for the eligibility estimate (conservative for PT/NL chat text).
+CHARS_PER_TOKEN = 3.0
 
 
 # Words that often open an agent message before a comma but are not names.
@@ -120,8 +130,23 @@ _VOCATIVE_RX = (
 
 
 def vocative_names(agent_texts: list[str]) -> set[str]:
-    """Words that agent messages use to address someone ("Ana, what do you think?").
-    In exports where usernames were replaced by letters, these are often real names."""
+    """Find words that agent messages use to address someone.
+
+    Matches patterns such as "Ana, what do you think?", "Oi Ana!", "..., Ana?"
+    and "ask Ana." and leaves out common greetings and pronouns. In exports
+    where usernames were replaced by letters, these words are often real
+    first names.
+
+    Parameters
+    ----------
+    agent_texts : list of str
+        Texts of agent messages.
+
+    Returns
+    -------
+    set of str
+        Candidate words of 3+ letters, as written.
+    """
     found: set[str] = set()
     for t in agent_texts:
         for rx in _VOCATIVE_RX:
@@ -133,6 +158,12 @@ def vocative_names(agent_texts: list[str]) -> set[str]:
 
 
 def role_matcher(config: AnalyzerConfig):  # type: ignore[no-untyped-def]
+    """Return a predicate ``username -> bool`` that is True for agents.
+
+    Uses ``agent_pattern`` and ``extra_agent_patterns``: case-insensitive
+    substrings, or regular expressions (``re.search``) with
+    ``agent_pattern_regex=True``.
+    """
     pats = (config.agent_pattern, *config.extra_agent_patterns)
     if config.agent_pattern_regex:
         rxs = [re.compile(p, re.IGNORECASE) for p in pats]
@@ -143,6 +174,32 @@ def role_matcher(config: AnalyzerConfig):  # type: ignore[no-untyped-def]
 
 @dataclass(frozen=True)
 class Unit:
+    """One unit of a chat: an agent message, or a run of one student's messages.
+
+    Consecutive messages of one student at most ``unit_gap`` apart form one
+    Student Contribution Unit; each agent message is its own unit.
+
+    Attributes
+    ----------
+    unit_id : str
+        ``u001``, ``u002``, ... in chat order, zero-padded to at least three
+        digits so that ids sort lexicographically.
+    order : int
+        1-based position in the chat.
+    speaker : str
+        Pseudonym (or username with ``pseudonymize=False``).
+    is_agent : bool
+        True for agent units.
+    message_ids : tuple of str
+        Ids of the messages in the unit, in order.
+    t_start, t_end : pandas.Timestamp
+        Time of the first and last message.
+    t_min : float
+        Minutes from the group's first message to `t_start`.
+    text : str
+        Pseudonymized message texts joined with ``" ⏎ "``.
+    """
+
     unit_id: str
     order: int
     speaker: str
@@ -156,6 +213,36 @@ class Unit:
 
 @dataclass
 class PreparedGroup:
+    """One group after preprocessing: messages, units, pseudonyms, eligibility.
+
+    Attributes
+    ----------
+    group : str
+        Group id.
+    messages : pandas.DataFrame
+        One row per message with ``group``, ``row_index``, ``message_id``,
+        ``unit_id``, ``seq``, ``speaker``, ``is_agent``, ``timestamp`` and
+        ``t_min`` (minutes). No text column.
+    units : list of Unit
+        Units in chat order.
+    pseudonymizer : Pseudonymizer
+        The fitted name → pseudonym map of this group (kept in memory only).
+    n_student_messages, n_agent_messages, n_students : int
+        Counts of student messages, agent messages and distinct students.
+    duration_min : float
+        Last minus first timestamp, in minutes.
+    agent_share : float
+        Fraction of messages written by agents.
+    flagged_agent_share : bool
+        True when `agent_share` exceeds ``max_agent_share`` (W009).
+    est_tokens : int
+        Estimated prompt size in tokens (transcript characters / 3 + 6,000).
+    eligibility : {"eligible", "insufficient_data", "too_long", "excluded"}
+        Whether the group is sent to the model, and why not.
+    reasons : list of str
+        Why the group is not eligible (empty when eligible).
+    """
+
     group: str
     messages: pd.DataFrame  # one row per message, no text column
     units: list[Unit]
@@ -172,28 +259,34 @@ class PreparedGroup:
 
     @property
     def unit_index(self) -> dict[str, Unit]:
+        """Map unit id → `Unit`."""
         return {u.unit_id: u for u in self.units}
 
     @property
     def student_unit_ids(self) -> list[str]:
+        """Ids of the student units, in order."""
         return [u.unit_id for u in self.units if not u.is_agent]
 
     @property
     def agent_unit_ids(self) -> list[str]:
+        """Ids of the agent units, in order."""
         return [u.unit_id for u in self.units if u.is_agent]
 
     @property
     def n_student_units(self) -> int:
+        """Number of student units."""
         return sum(not u.is_agent for u in self.units)
 
     @property
     def speakers(self) -> list[str]:
+        """Distinct speakers in order of first appearance."""
         return list(dict.fromkeys(u.speaker for u in self.units))
 
 
 def _build_units(
     msgs: pd.DataFrame, texts: list[str], gap_s: float
 ) -> tuple[list[Unit], list[str]]:
+    """Merge messages into units; also return the unit id of every message."""
     units: list[Unit] = []
     unit_of_msg: list[str] = []
     t0 = msgs["timestamp"].iloc[0]
@@ -255,6 +348,26 @@ def prepare_group(
     report: ValidationReport,
     other_names: tuple[str, ...] = (),
 ) -> PreparedGroup:
+    """Preprocess one group and add its issues to `report`.
+
+    Parameters
+    ----------
+    group : str
+        Group id.
+    sub : pandas.DataFrame
+        The group's rows of the cleaned table, in time order.
+    config : AnalyzerConfig
+        Roles, privacy, unit gap and eligibility thresholds.
+    report : ValidationReport
+        Receives W003, W004, W009, W010, W013, W014 and W017.
+    other_names : tuple of str, optional
+        Names that must become ``[NAME]`` in this group's text: students of
+        other groups and vocatives found in agent messages.
+
+    Returns
+    -------
+    PreparedGroup
+    """
     is_agent_fn = role_matcher(config)
     msgs = sub.reset_index(drop=True).copy()
     msgs["is_agent"] = msgs["username"].map(lambda u: bool(is_agent_fn(str(u))))
@@ -379,6 +492,23 @@ def prepare_group(
 def prepare(
     clean: pd.DataFrame, config: AnalyzerConfig, report: ValidationReport
 ) -> dict[str, PreparedGroup]:
+    """Preprocess every group of a cleaned table.
+
+    Parameters
+    ----------
+    clean : pandas.DataFrame
+        Output of `fgpd_analyzer.validation.check_frame`.
+    config : AnalyzerConfig
+        Full configuration.
+    report : ValidationReport
+        Receives the input-wide issues (E007, W008, W016), every group's
+        issues, and the per-group summary in ``report.info``.
+
+    Returns
+    -------
+    dict of str to PreparedGroup
+        In sorted group order. Empty when no student message exists (E007).
+    """
     groups: dict[str, PreparedGroup] = {}
     is_agent_fn = role_matcher(config)
     names = clean["username"].astype(str).unique()

@@ -1,6 +1,14 @@
-"""Command line interface: `fgpd ...`.
+"""Command line interface: ``fgpd ...``.
 
-Exit codes: 0 ok, 2 validation errors, 3 backend failure, 4 partial results.
+A thin layer over `FGPDAnalyzer` and `FGPDResults` that covers the whole
+pipeline from a file: ``validate`` and ``estimate`` (input stage, no network),
+``analyze`` (all stages, API calls), ``timeseries`` and ``influence`` (outputs
+stage, on saved results, no network), plus prompts, codebook, coding-sheet and
+cache utilities. Each command's docstring is its ``--help`` text.
+
+Exit codes: 0 ok, 2 validation or configuration errors, 3 backend failure
+(every call failed), 4 partial results (some calls failed) or problems found
+by ``coding-sheet check``.
 """
 
 from __future__ import annotations
@@ -14,17 +22,33 @@ app = typer.Typer(
     help="Measure the Four Goals for Productive Discussion in group chats.", no_args_is_help=True
 )
 prompts_app = typer.Typer(help="View and export the base prompts.", no_args_is_help=True)
-codebook_app = typer.Typer(help="Human codebook.", no_args_is_help=True)
-sheet_app = typer.Typer(help="Human coding workbook.", no_args_is_help=True)
-cache_app = typer.Typer(help="Local response cache.", no_args_is_help=True)
+codebook_app = typer.Typer(help="Export the human codebook.", no_args_is_help=True)
+sheet_app = typer.Typer(help="Export and check human coding workbooks.", no_args_is_help=True)
+cache_app = typer.Typer(
+    help="Inspect, export and clear the local response cache.", no_args_is_help=True
+)
 app.add_typer(prompts_app, name="prompts")
 app.add_typer(codebook_app, name="codebook")
 app.add_typer(sheet_app, name="coding-sheet")
 app.add_typer(cache_app, name="cache")
 
-AgentOpt = Annotated[str, typer.Option("--agent-pattern", help="Username substring of agents.")]
+AgentOpt = Annotated[
+    str,
+    typer.Option("--agent-pattern", help="Usernames containing this text (any case) are agents."),
+]
 NameMapOpt = Annotated[
-    Path | None, typer.Option("--name-map", help="JSON key {real name: username}.")
+    Path | None,
+    typer.Option(
+        "--name-map",
+        help="JSON file {real name: username}; real names in the text become pseudonyms.",
+    ),
+]
+ExcludeOpt = Annotated[
+    bool,
+    typer.Option(help="Leave out groups whose agent share is above 40% (status 'excluded')."),
+]
+NRunsOpt = Annotated[
+    int, typer.Option(help="Independent runs per group and goal (majority consensus).")
 ]
 ColOpt = Annotated[
     list[str] | None,
@@ -35,6 +59,7 @@ ColOpt = Annotated[
 
 
 def _columns(items: list[str] | None) -> dict[str, str] | None:
+    """Parse repeated ``canonical=source`` options into a column mapping."""
     if not items:
         return None
     out = {}
@@ -47,6 +72,7 @@ def _columns(items: list[str] | None) -> dict[str, str] | None:
 
 
 def _analyzer(**kw: Any) -> Any:
+    """Build an `FGPDAnalyzer`, leaving options that were not given at their defaults."""
     from . import FGPDAnalyzer
 
     return FGPDAnalyzer(**{k: v for k, v in kw.items() if v is not None})
@@ -65,10 +91,16 @@ def validate(
     chats: Path,
     agent_pattern: AgentOpt = "agent",
     column: ColOpt = None,
-    exclude_flagged: bool = False,
+    exclude_flagged: ExcludeOpt = False,
     name_map: NameMapOpt = None,
 ) -> None:
-    """Validate an input file. No network."""
+    """Validate an input file. No network, no cost.
+
+    Checks columns, timestamps, roles, pseudonymization and eligibility of
+    CHATS (csv, tsv, xlsx or parquet; one row per message) and prints every
+    issue with its code, followed by one summary line per group. Exits with 2
+    if there are errors.
+    """
     fa = _analyzer(agent_pattern=agent_pattern, exclude_flagged=exclude_flagged, name_map=name_map)
     rep = fa.validate_input(chats, columns=_columns(column))
     typer.echo(rep.to_text())
@@ -82,10 +114,16 @@ def estimate(
     chats: Path,
     agent_pattern: AgentOpt = "agent",
     column: ColOpt = None,
-    n_runs: int = 3,
-    exclude_flagged: bool = False,
+    n_runs: NRunsOpt = 3,
+    exclude_flagged: ExcludeOpt = False,
 ) -> None:
-    """Estimate the cost of an analysis. No network."""
+    """Estimate the cost of analyzing CHATS, in USD. No network, no cost.
+
+    Prints the number of calls and a low / mid / high estimate, then one row
+    per group. Output tokens per call cannot be known before a run and are
+    assumed (3k / 9k / 16k); use the high value as a budget. Exits with 2 if
+    the input has validation errors.
+    """
     from .exceptions import InputValidationError
 
     fa = _analyzer(agent_pattern=agent_pattern, n_runs=n_runs, exclude_flagged=exclude_flagged)
@@ -104,22 +142,48 @@ def analyze(
     out: Annotated[Path, typer.Option("--out", "-o", help="Output directory.")],
     agent_pattern: AgentOpt = "agent",
     column: ColOpt = None,
-    n_runs: int = 3,
-    lag: str = "2min",
-    every: Annotated[list[str] | None, typer.Option(help="Time-series bins.")] = None,  # noqa: UP007
-    backend: str = "anthropic",
-    model: str | None = None,  # noqa: UP007
-    effort: str | None = None,  # noqa: UP007
-    justification_language: str | None = None,  # noqa: UP007
-    chat_language: str | None = None,  # noqa: UP007
-    exclude_flagged: bool = False,
-    fmt: Annotated[str, typer.Option("--format")] = "csv",
-    group: Annotated[list[str] | None, typer.Option("--group", help="Only these groups.")] = None,
+    n_runs: NRunsOpt = 3,
+    lag: Annotated[
+        str, typer.Option(help="Agent-influence window, e.g. 90s or 2min (post hoc).")
+    ] = "2min",
+    every: Annotated[
+        list[str] | None,
+        typer.Option(help="Time-series bin width, e.g. 5min; repeat for several (default 5min)."),
+    ] = None,  # noqa: UP007
+    backend: Annotated[
+        str, typer.Option(help="anthropic (real API calls) or mock (synthetic, offline).")
+    ] = "anthropic",
+    model: Annotated[str | None, typer.Option(help="Model id (default claude-haiku-5-5).")] = None,  # noqa: UP007
+    effort: Annotated[
+        str | None, typer.Option(help="low, medium, high, xhigh or max (default medium).")
+    ] = None,  # noqa: UP007
+    justification_language: Annotated[
+        str | None, typer.Option(help="Language of the justifications, e.g. pt (default en).")
+    ] = None,  # noqa: UP007
+    chat_language: Annotated[
+        str | None, typer.Option(help="Language of the chats, e.g. pt-BR (default: any).")
+    ] = None,  # noqa: UP007
+    exclude_flagged: ExcludeOpt = False,
+    fmt: Annotated[str, typer.Option("--format", help="Table format: csv or parquet.")] = "csv",
+    group: Annotated[
+        list[str] | None, typer.Option("--group", help="Only these groups; repeat for several.")
+    ] = None,
     name_map: NameMapOpt = None,
-    cache: Annotated[str, typer.Option(help="use, refresh or off.")] = "use",
-    cache_dir: Path | None = None,
+    cache: Annotated[
+        str, typer.Option(help="Response cache: use, refresh (ignore cached) or off.")
+    ] = "use",
+    cache_dir: Annotated[
+        Path | None, typer.Option(help="Cache directory (default: the user cache directory).")
+    ] = None,
 ) -> None:
-    """Run the analysis and save all outputs to OUT."""
+    """Analyze CHATS with the model and save every output table to OUT.
+
+    Makes API calls (one per eligible group, goal and run) unless the
+    responses are cached; check the cost first with 'fgpd estimate'.
+    Validation errors stop the command before any call (exit 2). Writes
+    frequencies, patterns, time series, run metadata and the validation
+    report to OUT. Exits with 3 if every call failed and 4 if some did.
+    """
     from .exceptions import BackendError, ConfigError, InputValidationError
 
     try:
@@ -168,8 +232,18 @@ def analyze(
 
 
 @app.command()
-def timeseries(results: Path, every: str = "5min", out: Path | None = None) -> None:  # noqa: UP007
-    """Recompute the cumulative time series from saved results. No network."""
+def timeseries(
+    results: Path,
+    every: Annotated[str, typer.Option(help="Bin width, e.g. 10min.")] = "5min",
+    out: Annotated[
+        Path | None, typer.Option(help="Output CSV (default RESULTS/timeseries_<every>.csv).")
+    ] = None,
+) -> None:  # noqa: UP007
+    """Recompute the cumulative time series from saved results. No network.
+
+    Reads the directory RESULTS written by 'fgpd analyze' and writes one CSV
+    with one row per group, goal and bin of the given width.
+    """
     from .results import FGPDResults
 
     ts = FGPDResults.load(results).timeseries(every)
@@ -180,9 +254,22 @@ def timeseries(results: Path, every: str = "5min", out: Path | None = None) -> N
 
 @app.command()
 def influence(
-    results: Path, lag: str = "2min", rule: str = "uptake", out: Path | None = None
+    results: Path,
+    lag: Annotated[str, typer.Option(help="Agent-influence window, e.g. 90s or 2min.")] = "2min",
+    rule: Annotated[
+        str, typer.Option(help="uptake (content uptake only) or temporal (also proximity).")
+    ] = "uptake",
+    out: Annotated[
+        Path | None, typer.Option(help="Output directory (default: overwrite RESULTS).")
+    ] = None,
 ) -> None:  # noqa: UP007
-    """Recompute agent influence with another lag or rule. No network."""
+    """Recompute agent influence with another lag or rule. No network.
+
+    Reads the directory RESULTS written by 'fgpd analyze', applies the new lag
+    and rule to the stored patterns, and rewrites patterns, frequencies and
+    every existing time-series table in the same format. Exits with 2 for an
+    invalid lag or rule.
+    """
     from .exceptions import ConfigError
     from .results import FGPDResults
 
@@ -202,22 +289,45 @@ def influence(
 
 @prompts_app.command("list")
 def prompts_list() -> None:
+    """List the base prompts with version, hash, source and template variables."""
     typer.echo(_analyzer().list_prompts().to_string(index=False))
 
 
 @prompts_app.command("show")
-def prompts_show(name: str, rendered: bool = False, goal: str | None = None) -> None:  # noqa: UP007
+def prompts_show(
+    name: str,
+    rendered: Annotated[
+        bool, typer.Option(help="Show the text the model receives, not the template.")
+    ] = False,
+    goal: Annotated[
+        str | None, typer.Option(help="Goal G1-G4; needed to render task_detect.")
+    ] = None,
+) -> None:  # noqa: UP007
+    """Print one base prompt NAME (see 'fgpd prompts list')."""
     typer.echo(_analyzer().show_prompt(name, rendered=rendered, goal=goal))
 
 
 @prompts_app.command("export")
 def prompts_export(directory: Path) -> None:
+    """Write every base prompt to DIRECTORY as <name>.md.j2 and print the paths.
+
+    Edited files can be loaded back with prompts_dir=DIRECTORY in Python.
+    """
     for p in _analyzer().export_prompts(directory):
         typer.echo(str(p))
 
 
 @codebook_app.command("export")
-def codebook_export(path: Path, justification_language: str = "en") -> None:
+def codebook_export(
+    path: Path,
+    justification_language: Annotated[
+        str, typer.Option(help="Language the codebook asks justifications in, e.g. pt.")
+    ] = "en",
+) -> None:
+    """Write the human codebook to PATH (Markdown).
+
+    Its rule sections are the prompts the model receives, verbatim.
+    """
     typer.echo(str(_analyzer(justification_language=justification_language).export_codebook(path)))
 
 
@@ -225,11 +335,20 @@ def codebook_export(path: Path, justification_language: str = "en") -> None:
 def sheet_export(
     chats: Path,
     path: Path,
-    group: list[str] | None = None,  # noqa: UP007
-    coder: str = "",
+    group: Annotated[
+        list[str] | None,
+        typer.Option(help="Only these groups; repeat for several (default: all eligible)."),
+    ] = None,  # noqa: UP007
+    coder: Annotated[str, typer.Option(help="Coder name or id stored in the workbook.")] = "",
     agent_pattern: AgentOpt = "agent",
     column: ColOpt = None,
 ) -> None:
+    """Write a coding workbook (xlsx) for a human coder from CHATS to PATH.
+
+    The workbook shows exactly the units the model sees and has one form per
+    goal with the fields of the model output. For a coding study, export one
+    workbook per group. No network.
+    """
     fa = _analyzer(agent_pattern=agent_pattern)
     typer.echo(
         str(
@@ -242,7 +361,13 @@ def sheet_export(
 def sheet_check(
     chats: Path, workbook: Path, agent_pattern: AgentOpt = "agent", column: ColOpt = None
 ) -> None:
-    """Report structural problems in a filled workbook, without changing it."""
+    """Report structural problems in a filled coding WORKBOOK, without changing it.
+
+    Applies the same structural rules as to the model output (in report-only
+    mode) and prints one line per problem with its spreadsheet row. CHATS
+    must be the input the workbook was exported from. Exits with 4 if
+    problems were found.
+    """
     from .coding import check_coding_sheet
 
     fa = _analyzer(agent_pattern=agent_pattern)
@@ -251,11 +376,15 @@ def sheet_check(
     raise typer.Exit(0 if report.empty else 4)
 
 
-CacheDirOpt = Annotated[Path | None, typer.Option("--cache-dir")]
+CacheDirOpt = Annotated[
+    Path | None,
+    typer.Option("--cache-dir", help="Cache directory (default: the user cache directory)."),
+]
 
 
 @cache_app.command("info")
 def cache_info(cache_dir: CacheDirOpt = None) -> None:
+    """Print the location of the response cache and the number of stored responses."""
     from .cache import ResponseCache
 
     c = ResponseCache(cache_dir)
@@ -263,8 +392,19 @@ def cache_info(cache_dir: CacheDirOpt = None) -> None:
 
 
 @cache_app.command("export")
-def cache_export(path: Path, results: Path | None = None, cache_dir: CacheDirOpt = None) -> None:
-    """Write cached responses as JSONL for ReplayBackend (only those of RESULTS, if given)."""
+def cache_export(
+    path: Path,
+    results: Annotated[
+        Path | None,
+        typer.Option(help="Results directory; export only the responses of that analysis."),
+    ] = None,
+    cache_dir: CacheDirOpt = None,
+) -> None:
+    """Write cached responses to PATH as JSONL, for ReplayBackend.
+
+    With the same input and settings, the file replays an analysis bit for bit
+    without API calls. It holds pseudonymized model output only.
+    """
     import json
 
     from .cache import ResponseCache
@@ -279,6 +419,7 @@ def cache_export(path: Path, results: Path | None = None, cache_dir: CacheDirOpt
 
 @cache_app.command("clear")
 def cache_clear(cache_dir: CacheDirOpt = None) -> None:
+    """Delete every cached response; later analyses call the API again."""
     from .cache import ResponseCache
 
     typer.echo(f"removed {ResponseCache(cache_dir).clear()} responses")

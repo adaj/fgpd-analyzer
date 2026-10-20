@@ -1,10 +1,11 @@
 """Package loggers. Log records may carry ids, counts, hashes and timings only.
 
-`RedactingFilter` is a second line of defence: every original username and
-`extra_names` entry seen during preprocessing is registered here, and any
-occurrence in a log message (ignoring case and accents) becomes ``<redacted>``.
-Filters on a parent logger do not run for child loggers, so every module must
-obtain its logger through `get_logger`, which attaches the filter.
+Used by every stage of the pipeline. `RedactingFilter` is a second line of
+defence: every original username and `extra_names` entry seen during
+preprocessing is registered here, and any occurrence in a log message
+(ignoring case and accents) becomes ``<redacted>``. Filters on a parent logger
+do not run for child loggers, so every module must obtain its logger through
+`get_logger`, which attaches the filter.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ PACKAGE = "fgpd_analyzer"
 
 
 def _fold(text: str) -> str:
+    """Lower-case, accent-free copy of the same length (see `pseudonymize.fold`)."""
     out = []
     for c in unicodedata.normalize("NFC", text):
         base = unicodedata.normalize("NFD", c)[0]
@@ -27,6 +29,8 @@ def _fold(text: str) -> str:
 
 
 class RedactingFilter(logging.Filter):
+    """Logging filter that replaces registered names by ``<redacted>``."""
+
     def __init__(self) -> None:
         super().__init__()
         self._names: set[str] = set()
@@ -34,6 +38,7 @@ class RedactingFilter(logging.Filter):
         self._rx: re.Pattern[str] | None = None
 
     def register(self, *names: str) -> None:
+        """Add names to redact (names shorter than 2 characters are ignored)."""
         with self._lock:
             before = len(self._names)
             self._names.update(_fold(n) for n in names if n and len(n.strip()) >= 2)
@@ -42,6 +47,7 @@ class RedactingFilter(logging.Filter):
                 self._rx = re.compile("|".join(re.escape(a) for a in alts))
 
     def redact(self, text: str) -> str:
+        """Return `text` with every registered name replaced (any case or accents)."""
         rx = self._rx
         if rx is None:
             return text
@@ -56,6 +62,7 @@ class RedactingFilter(logging.Filter):
         return "".join(out)
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Redact the formatted message of `record` in place; never drop it."""
         if self._rx is not None:
             record.msg = self.redact(record.getMessage())
             record.args = None

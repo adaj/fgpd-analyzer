@@ -1,5 +1,12 @@
 """Post-validation of one model (or human) response (DESIGN §8.3 and §3.4).
 
+The post-validation stage of the pipeline (input → units → prompts → requests
+→ runs → **post-validation** → consensus → influence → outputs). It parses the
+JSON output of one call and enforces the codebook rules that code can check:
+known ids and indicators, evidence inside the span, valid antecedents and
+agent citations, the structural level constraints per goal, and merging of
+overlapping patterns of the same goal.
+
 Every correction is deterministic and recorded in `qc_flags`. The same checks
 are reported, without being applied, by `coding-sheet check` for human codes.
 """
@@ -15,12 +22,41 @@ from .codebook import ANTECEDENT_REQUIRED, GOAL_INDICATORS
 from .exceptions import ResponseParseError
 from .preprocess import PreparedGroup
 
+#: Justifications longer than this many words are truncated (flag ``justification_truncated``).
 JUSTIFICATION_TRUNCATE_WORDS = 60
 
 
 @dataclass(frozen=True)
 class Pattern:
-    """One validated pattern of one run (or one human coder)."""
+    """One validated pattern of one run (or one human coder).
+
+    Attributes
+    ----------
+    group, goal : str
+    run_idx : int
+        Run index (0-based); -1 for a consensus pattern.
+    start_id, end_id : str
+        First and last unit of the span.
+    evidence_ids : tuple of str
+        Student units that show the goal, in chat order, inside the span.
+    antecedent_id : str or None
+        Peer student unit taken up (required for G2 and G4); never an
+        evidence unit.
+    indicators : tuple of str
+        Indicators of the goal.
+    level : int
+        1–4.
+    agent_uptake_id : str or None
+        Agent unit whose content the students take up, as cited (lag-free).
+    justification : str
+        Short pseudonymized justification.
+    qc_flags : tuple of str
+        Every correction applied (e.g. ``span_swapped``, ``demoted_4_to_3``).
+    source : str
+        ``"model"`` or ``"human"``.
+    k : int
+        Position among the patterns of this group × goal × run.
+    """
 
     group: str
     goal: str
@@ -39,24 +75,48 @@ class Pattern:
 
     @property
     def run_pattern_id(self) -> str:
+        """Identifier ``{group}:{goal}:{run_idx}:{k}``."""
         return f"{self.group}:{self.goal}:{self.run_idx}:{self.k}"
 
     @property
     def score(self) -> float:
+        """Level / 4, in [0.25, 1]."""
         return self.level / 4
 
 
 @dataclass
 class QC:
+    """Counter of quality-control events (corrections, drops, merges, fallbacks)."""
+
     counts: Counter[str] = field(default_factory=Counter)
 
     def flag(self, flags: list[str], name: str) -> None:
+        """Append `name` to a pattern's `flags` and count it."""
         flags.append(name)
         self.counts[name] += 1
 
 
 def parse_response(text: str, goal: str) -> list[dict[str, Any]]:
-    """Parse JSON; raise ResponseParseError when unusable (the runner retries once)."""
+    """Parse the JSON output of one call.
+
+    Parameters
+    ----------
+    text : str
+        Response text.
+    goal : str
+        The goal that was asked for.
+
+    Returns
+    -------
+    list of dict
+        The raw pattern objects (non-dict items are skipped).
+
+    Raises
+    ------
+    ResponseParseError
+        For invalid JSON, a missing ``patterns`` list or another goal. The
+        runner retries the call once.
+    """
     try:
         data = json.loads(text)
     except (ValueError, TypeError) as e:
@@ -69,6 +129,7 @@ def parse_response(text: str, goal: str) -> list[dict[str, Any]]:
 
 
 def _norm_id(v: Any) -> str | None:
+    """Return the lower-case, stripped id, or None for empty values."""
     if v is None:
         return None
     s = str(v).strip().lower()
@@ -76,6 +137,7 @@ def _norm_id(v: Any) -> str | None:
 
 
 def _norm_ids(v: Any) -> list[str]:
+    """Return normalized, de-duplicated ids from a list or a single value."""
     if not isinstance(v, list):
         v = [v] if v else []
     out = [x for x in (_norm_id(i) for i in v) if x]
@@ -83,6 +145,7 @@ def _norm_ids(v: Any) -> list[str]:
 
 
 def _level(v: Any) -> int:
+    """Return the integer level of an int, a float such as 3.0 or a string; 0 if invalid."""
     try:
         f = float(v)
     except (TypeError, ValueError):
@@ -91,7 +154,7 @@ def _level(v: Any) -> int:
 
 
 class _Validator:
-    """Per-group lookup tables plus the single-pattern rules (§8.3 steps 2–5, 7)."""
+    """Per-group lookup tables plus the single-pattern rules (§8.3 steps 2-5, 7)."""
 
     def __init__(self, pg: PreparedGroup, goal: str) -> None:
         units = pg.unit_index
@@ -104,7 +167,9 @@ class _Validator:
 
     def check(self, item: dict[str, Any], flags: list[str], qc: QC) -> dict[str, Any] | None:
         """Return the corrected fields, or None when the pattern must be dropped.
-        Every problem is appended to `flags`."""
+
+        Every problem is appended to `flags` and counted in `qc`.
+        """
         order, speaker, goal = self.order, self.speaker, self.goal
         # 2. indicators
         inds_raw = [str(i).strip().lower() for i in (item.get("indicators") or [])]
@@ -206,6 +271,7 @@ class _Validator:
 
 
 def _raw(p: Pattern) -> dict[str, Any]:
+    """Convert a pattern back to the raw dict shape, to re-check a merged pattern."""
     return {
         "start_id": p.start_id,
         "end_id": p.end_id,
@@ -228,8 +294,35 @@ def validate_patterns(
     qc: QC | None = None,
     apply: bool = True,
 ) -> tuple[list[Pattern], QC]:
-    """Apply §8.3. With `apply=False` (human sheets) nothing is demoted, dropped
-    or merged: every pattern is returned as reported, with its problems flagged."""
+    """Validate and correct the raw patterns of one call (DESIGN §8.3).
+
+    Parameters
+    ----------
+    raw : list of dict
+        Output of `parse_response`, or rows of a human coding sheet.
+    pg : PreparedGroup
+        The chat, for ids, roles, speakers and order.
+    goal : str
+        Goal of the call.
+    run_idx : int
+        Run index stored on the patterns.
+    source : str, default "model"
+        ``"model"`` or ``"human"``.
+    qc : QC, optional
+        Counter to update; a new one when omitted.
+    apply : bool, default True
+        If False (human sheets), nothing is demoted, dropped or merged: every
+        pattern is returned as reported, with its problems flagged
+        (overlaps flagged as ``overlap``).
+
+    Returns
+    -------
+    patterns : list of Pattern
+        Sorted by span and numbered (`k`). Overlapping patterns of the goal
+        are merged and the merge re-checked; if the union breaks a rule, the
+        stronger pattern is kept (``overlap_dropped``).
+    qc : QC
+    """
     qc = qc or QC()
     v = _Validator(pg, goal)
     order = v.order
@@ -304,8 +397,23 @@ def validate_patterns(
 
 
 def merge_patterns(a: Pattern, b: Pattern, order: dict[str, int]) -> Pattern:
-    """Union of two overlapping patterns. Evidence is never lost: the antecedent is
-    the first of the two that is not evidence of either."""
+    """Return the union of two overlapping patterns.
+
+    Span = union of spans; evidence = union (never lost); level = the higher;
+    indicators = union; antecedent = the first of the two that is not
+    evidence of either; justification of the stronger pattern.
+
+    Parameters
+    ----------
+    a, b : Pattern
+    order : dict of str to int
+        Unit id → position.
+
+    Returns
+    -------
+    Pattern
+        Flagged ``overlap_merged``; not yet re-checked.
+    """
     start = a.start_id if order[a.start_id] <= order[b.start_id] else b.start_id
     end = a.end_id if order[a.end_id] >= order[b.end_id] else b.end_id
     ev = set(a.evidence_ids) | set(b.evidence_ids)

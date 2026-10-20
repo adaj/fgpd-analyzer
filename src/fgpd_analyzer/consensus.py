@@ -1,5 +1,9 @@
 """Consensus across repeated runs (DESIGN §5). Deterministic.
 
+The consensus stage of the pipeline (input → units → prompts → requests →
+runs → post-validation → **consensus** → influence → outputs). It also
+computes the cross-run stability (Fleiss' kappa) stored in the run metadata.
+
 Patterns of one group × goal from R successful runs are clustered by span
 overlap (IoU on unit positions, Hungarian matching run by run). A cluster
 found in at least `consensus_min_support` of the runs becomes a consensus
@@ -21,6 +25,7 @@ from .preprocess import PreparedGroup
 
 
 def iou(a: tuple[int, int], b: tuple[int, int]) -> float:
+    """Intersection over union of two inclusive ``(start, end)`` unit-position spans."""
     inter = min(a[1], b[1]) - max(a[0], b[0]) + 1
     if inter <= 0:
         return 0.0
@@ -29,16 +34,20 @@ def iou(a: tuple[int, int], b: tuple[int, int]) -> float:
 
 
 def lower_median(values: Sequence[int]) -> int:
+    """Median that, for an even count, takes the lower of the two middle values."""
     s = sorted(values)
     return s[(len(s) - 1) // 2]
 
 
 @dataclass
 class Cluster:
+    """Patterns of different runs matched as the same pattern, with their spans."""
+
     members: list[Pattern] = field(default_factory=list)
     spans: list[tuple[int, int]] = field(default_factory=list)
 
     def rep(self) -> tuple[int, int]:
+        """Return the representative span: median start and median end (truncated to int)."""
         return (
             int(np.median([s for s, _ in self.spans])),
             int(np.median([e for _, e in self.spans])),
@@ -47,6 +56,22 @@ class Cluster:
 
 @dataclass(frozen=True)
 class ConsensusPattern:
+    """A consensus (or unstable) pattern with its cross-run statistics.
+
+    Attributes
+    ----------
+    pattern : Pattern
+        Consensus values (``run_idx = -1``).
+    support : float
+        Share of successful runs whose patterns are in the cluster.
+    n_runs_detected : int
+        Number of those runs.
+    level_min, level_max : int
+        Lowest and highest member level.
+    member_ids : tuple of str
+        ``run_pattern_id`` of every member.
+    """
+
     pattern: Pattern  # the consensus values, run_idx = -1
     support: float
     n_runs_detected: int
@@ -58,6 +83,25 @@ class ConsensusPattern:
 def cluster_runs(
     runs: dict[int, list[Pattern]], order: dict[str, int], match_iou: float
 ) -> list[Cluster]:
+    """Cluster the patterns of several runs by span overlap.
+
+    Runs are processed in order; each run's patterns are matched to the
+    existing clusters by maximum total IoU (Hungarian algorithm), and a match
+    needs IoU ≥ `match_iou`. Unmatched patterns start new clusters.
+
+    Parameters
+    ----------
+    runs : dict of int to list of Pattern
+        Validated patterns per successful run.
+    order : dict of str to int
+        Unit id → position.
+    match_iou : float
+        Minimum IoU for a match.
+
+    Returns
+    -------
+    list of Cluster
+    """
     clusters: list[Cluster] = []
     for r in sorted(runs):
         pats = runs[r]
@@ -81,6 +125,7 @@ def cluster_runs(
 
 
 def _majority_id(values: list[str | None], order: dict[str, int], strict_half: bool) -> str | None:
+    """Return the most cited id (earliest on ties); with `strict_half`, only if > half."""
     n = len(values)
     c = Counter(v for v in values if v is not None)
     if not c:
@@ -93,6 +138,26 @@ def _majority_id(values: list[str | None], order: dict[str, int], strict_half: b
 
 
 def merge_cluster(cl: Cluster, order: dict[str, int], group: str, goal: str) -> Pattern:
+    """Build the consensus values of one cluster.
+
+    Level and span = lower medians; evidence = units cited by at least half of
+    the members, the span widened to cover them; indicators = those cited by
+    at least half (else the most cited); antecedent = most cited (G2, G4) or
+    strict majority (G1, G3); agent citation = strict majority; justification
+    of the member at the consensus level that best overlaps the span.
+
+    Parameters
+    ----------
+    cl : Cluster
+    order : dict of str to int
+        Unit id → position.
+    group, goal : str
+
+    Returns
+    -------
+    Pattern
+        With ``run_idx = -1`` and the union of the members' flags.
+    """
     mem = cl.members
     n = len(mem)
     level = lower_median([p.level for p in mem])
@@ -142,6 +207,8 @@ def merge_cluster(cl: Cluster, order: dict[str, int], group: str, goal: str) -> 
 
 @dataclass
 class ConsensusResult:
+    """Consensus and unstable patterns of one group × goal, with QC counts."""
+
     consensus: list[ConsensusPattern]
     unstable: list[ConsensusPattern]
     qc: QC = field(default_factory=QC)
@@ -154,6 +221,28 @@ def build_consensus(
     match_iou: float,
     min_support: float,
 ) -> ConsensusResult:
+    """Build the consensus patterns of one group × goal.
+
+    Parameters
+    ----------
+    runs : dict of int to list of Pattern
+        Validated patterns per successful run (failed runs absent).
+    pg : PreparedGroup
+    goal : str
+    match_iou : float
+        Minimum IoU to match patterns across runs.
+    min_support : float
+        Minimum share of successful runs for a consensus pattern.
+
+    Returns
+    -------
+    ConsensusResult
+        Consensus patterns are re-validated with the same rules as single
+        runs; overlaps created by the medians are merged (flag
+        ``consensus_merge``). A supported cluster that fails the rules is kept
+        as unstable (``dropped_in_consensus``). With one successful run every
+        pattern is flagged ``no_dispersion``.
+    """
     order = {u.unit_id: u.order for u in pg.units}
     n_ok = len(runs)
     if n_ok == 0:
@@ -230,6 +319,7 @@ def build_consensus(
 
 
 def _as_raw(p: Pattern) -> dict[str, object]:
+    """Convert a pattern back to the raw dict shape, for re-validation."""
     return {
         "start_id": p.start_id,
         "end_id": p.end_id,
@@ -243,7 +333,20 @@ def _as_raw(p: Pattern) -> dict[str, object]:
 
 
 def fleiss_kappa(table: np.ndarray) -> float | None:
-    """Fleiss' kappa for an (items × categories) count table with equal raters per item."""
+    """Compute Fleiss' kappa of an items × categories count table.
+
+    Parameters
+    ----------
+    table : numpy.ndarray
+        Counts per item and category; every row must sum to the same number
+        of raters (≥ 2).
+
+    Returns
+    -------
+    float or None
+        None when undefined: empty table, unequal or fewer than two raters,
+        or every rating in one category.
+    """
     if table.size == 0:
         return None
     n = table.sum(axis=1)
@@ -259,7 +362,14 @@ def fleiss_kappa(table: np.ndarray) -> float | None:
 
 
 def membership_table(runs: dict[int, list[Pattern]], pg: PreparedGroup) -> np.ndarray:
-    """Rows = student units, columns = (not member, member) counts over runs."""
+    """Count, per student unit, the runs that use it as evidence of some pattern.
+
+    Returns
+    -------
+    numpy.ndarray
+        One row per student unit, columns ``(not evidence, evidence)``
+        counted over runs; input of `fleiss_kappa`.
+    """
     rows = []
     for uid in pg.student_unit_ids:
         k = sum(any(uid in p.evidence_ids for p in pats) for pats in runs.values())

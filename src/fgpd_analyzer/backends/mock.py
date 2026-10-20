@@ -1,4 +1,8 @@
-"""Offline backends.
+"""Offline backends: `MockBackend` and `ReplayBackend`.
+
+They replace the API in the runs stage of the pipeline (input → units →
+prompts → requests → **runs** → post-validation → ...), so that the rest of
+the pipeline can run without network.
 
 `MockBackend` returns deterministic, schema-valid synthetic patterns built from
 the transcript, with small run-to-run variation. It exercises the whole
@@ -28,7 +32,17 @@ _LINE = re.compile(r"^(u\d+) \| [^|]+ \| [^|]+ \| ([^|]+?) \| (.*)$")
 
 
 def parse_transcript_block(request: LLMRequest) -> list[tuple[str, str, bool, str]]:
-    """(unit_id, speaker, is_agent, text) from the transcript block of a request."""
+    """Recover the units from the transcript block of a request.
+
+    Parameters
+    ----------
+    request : LLMRequest
+
+    Returns
+    -------
+    list of tuple of (str, str, bool, str)
+        ``(unit_id, speaker, is_agent, text)`` per transcript line.
+    """
     block = request.messages[0]["content"][1]["text"]
     body = block.split("<transcript>\n", 1)[1].split("\n</transcript>", 1)[0]
     out = []
@@ -43,6 +57,36 @@ def parse_transcript_block(request: LLMRequest) -> list[tuple[str, str, bool, st
 
 
 class MockBackend:
+    """Deterministic synthetic backend for tests and examples. No network.
+
+    It pairs neighbouring student units into schema-valid patterns with a
+    level and, sometimes, an agent citation. The output depends only on the
+    transcript, the goal and the run index, with small run-to-run variation.
+    The numbers mean nothing about the chats. Usage is synthetic and gets no
+    USD cost.
+
+    Parameters
+    ----------
+    drop_rate : float, default 0.15
+        Probability that a run leaves out a pattern found by other runs.
+    script : callable, optional
+        ``script(request) -> LLMResponse | None``. A returned response is used
+        as is (e.g. to simulate refusals or ``max_tokens`` stops); None falls
+        back to the synthetic output.
+
+    Attributes
+    ----------
+    name, cache_namespace : str
+        ``"mock"``.
+    calls : list of LLMRequest
+        Every request received, in order.
+
+    Examples
+    --------
+    >>> fa = FGPDAnalyzer(backend="mock", agent_pattern="Clair")
+    >>> res = fa.analyze(chats_df)  # doctest: +SKIP
+    """
+
     name = "mock"
     cache_namespace = "mock"
 
@@ -57,6 +101,7 @@ class MockBackend:
         self.calls: list[LLMRequest] = []
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Return the scripted response, or synthetic patterns for the request."""
         self.calls.append(request)
         if self.script is not None:
             scripted = self.script(request)
@@ -71,6 +116,7 @@ class MockBackend:
         )
 
     def _usage(self, request: LLMRequest) -> dict[str, int]:
+        """Synthetic usage: a cache write on run 0, cache reads afterwards."""
         chars = sum(len(b["text"]) for b in request.messages[0]["content"])
         return {
             "input_tokens": 60,
@@ -80,6 +126,7 @@ class MockBackend:
         }
 
     def _patterns(self, request: LLMRequest) -> dict[str, Any]:
+        """Build the synthetic JSON output for one request."""
         units = parse_transcript_block(request)
         block = request.messages[0]["content"][1]["text"]
         seed = int(hashlib.sha256(f"{block}|{request.goal}".encode()).hexdigest()[:8], 16)
@@ -118,16 +165,44 @@ class MockBackend:
         return {"goal": goal, "patterns": patterns}
 
     async def aclose(self) -> None:
+        """Do nothing (no resources)."""
         return None
 
 
 class ReplayBackend:
+    """Backend that answers only from recorded responses. No network.
+
+    A replayed analysis is bit-identical to the recorded one; a request that
+    was not recorded fails with `BackendError` (status None).
+
+    Parameters
+    ----------
+    records : str, pathlib.Path or iterable of dict
+        A JSONL file, or records, each ``{"cache_key": ..., "response": {...}}``
+        as written by ``fgpd cache export`` / `ResponseCache.export_jsonl`.
+    namespace : str, default "anthropic"
+        Backend whose recorded responses are replayed; it must match the
+        namespace used when recording, since it is part of the cache key.
+
+    Attributes
+    ----------
+    name : str
+        ``"replay"`` (no USD cost is computed).
+    cache_namespace : str
+        `namespace`.
+
+    Examples
+    --------
+    >>> from fgpd_analyzer.backends.mock import ReplayBackend
+    >>> fa = FGPDAnalyzer(backend=ReplayBackend("responses.jsonl"))  # doctest: +SKIP
+    >>> res = fa.analyze("chats.csv")  # doctest: +SKIP
+    """
+
     name = "replay"
 
     def __init__(
         self, records: Path | str | Iterable[dict[str, Any]], *, namespace: str = "anthropic"
     ) -> None:
-        """`namespace`: the backend whose recorded responses are replayed."""
         self.cache_namespace = namespace
         if isinstance(records, (str, Path)):
             lines = Path(records).read_text(encoding="utf-8").splitlines()
@@ -137,9 +212,17 @@ class ReplayBackend:
         self._by_key = {r["cache_key"]: r["response"] for r in items}
 
     def has(self, key: str) -> bool:
+        """Return True if a response is recorded for the cache key `key`."""
         return key in self._by_key
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Return the recorded response for ``request.cache_key``.
+
+        Raises
+        ------
+        BackendError
+            If no response is recorded for this request.
+        """
         try:
             return LLMResponse.from_dict(self._by_key[request.cache_key])
         except KeyError:
@@ -149,4 +232,5 @@ class ReplayBackend:
             ) from None
 
     async def aclose(self) -> None:
+        """Do nothing (no resources)."""
         return None

@@ -1,4 +1,12 @@
-"""Input validation (DESIGN §9). Pure checks; messages never contain chat text."""
+"""Input validation (DESIGN §9): column mapping, parsing, cleaning and checks.
+
+This is the second stage of the pipeline (input → validation → units →
+prompts → requests → runs → post-validation → consensus → influence →
+outputs). `check_frame` maps the input columns to canonical names, parses the
+timestamps, drops empty and duplicate rows, sorts by time and records every
+problem in a `ValidationReport`. The checks are pure: they never raise on bad
+data and never call the network, and issue messages never contain chat text.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +25,26 @@ _MAX_ROWS = 20
 
 @dataclass(frozen=True)
 class Issue:
+    """One finding of input validation.
+
+    Attributes
+    ----------
+    code : str
+        Issue code, e.g. ``"E004"`` or ``"W009"`` (see `ValidationReport`).
+    severity : {"error", "warning", "info"}
+        Errors block the analysis; warnings and infos do not (unless
+        ``strict=True``, which turns warnings into errors).
+    message : str
+        Description. Never contains chat text.
+    group : str or None
+        Group concerned, or None for input-wide issues.
+    row_indices : tuple of int
+        Positions (0-based) of the concerned rows in the input table, at
+        most 20.
+    hint : str
+        Suggested fix, possibly empty.
+    """
+
     code: str
     severity: Severity
     message: str
@@ -25,6 +53,10 @@ class Issue:
     hint: str = ""
 
     def to_text(self) -> str:
+        """Return the issue as one line of text.
+
+        The format is ``CODE severity [group g]: message rows [...]. Hint: ...``.
+        """
         where = f" [group {self.group}]" if self.group is not None else ""
         rows = f" rows {list(self.row_indices)}" if self.row_indices else ""
         hint = f" Hint: {self.hint}" if self.hint else ""
@@ -33,6 +65,58 @@ class Issue:
 
 @dataclass
 class ValidationReport:
+    """All issues found in one input, plus a per-group summary.
+
+    Returned by `FGPDAnalyzer.validate_input`; also carried by
+    `InputValidationError` and stored in ``FGPDResults.validation``.
+
+    Attributes
+    ----------
+    issues : list of Issue
+        Every finding, in the order found.
+    info : pandas.DataFrame
+        One row per group with ``group``, ``n_messages``, ``n_student``,
+        ``n_agent``, ``n_students``, ``n_student_units``, ``duration_min``
+        (minutes), ``agent_share`` (fraction of messages), ``flagged_agent_share``,
+        ``est_tokens`` (estimated prompt tokens) and ``eligibility``
+        (``eligible``, ``insufficient_data``, ``too_long`` or ``excluded``).
+        Empty when the input could not be prepared.
+
+    Notes
+    -----
+    Issue codes (DESIGN §9, extended in docs/decisions.md):
+
+    ====  ========  ==========================================================
+    Code  Severity  Meaning
+    ====  ========  ==========================================================
+    E001  error     Required column missing, or a mapped column not found
+    E002  error     Several source columns match one canonical column
+    E003  error     Missing group, username or timestamp
+    E004  error     Unparseable timestamp
+    E006  error     Mixed timezone-aware and naive timestamps
+    E007  error     No student messages in the whole input
+    E008  error     Duplicate or empty ``message_id`` within a group
+    E009  error     Reserved; invalid configuration raises `ConfigError`
+    W001  warning   Empty text (row dropped)
+    W002  warning   Exact duplicate rows (dropped)
+    W003  warning   Too few student messages or students → ``insufficient_data``
+    W004  warning   Group has no agent messages
+    W005  warning   Timestamps out of order, stable-sorted (error if ``sort=False``)
+    W006  warning   Identical timestamps within a group (file order kept)
+    W007  warning   Gap longer than 60 minutes within a group
+    W008  warning   Agent pattern matches no username, or > 50 % of a group's
+    W009  warning   Agent share above ``max_agent_share`` (group flagged)
+    W010  warning   Estimated prompt above ``max_prompt_tokens`` → ``too_long``
+    W013  warning   Names shorter than ``min_name_len_in_text`` not replaced in text
+    W014  warning   Usernames look like pseudonyms; other prefixes used
+    W015  warning   Day/month order of some timestamps was guessed
+    W016  warning   Words agents use to address someone replaced by ``[NAME]``
+    W017  warning   Words one letter away from a known name replaced
+    I001  info      Extra columns ignored
+    I002  info      ``message_id`` column empty; ids generated
+    ====  ========  ==========================================================
+    """
+
     issues: list[Issue] = field(default_factory=list)
     info: pd.DataFrame = field(default_factory=pd.DataFrame)  # one row per group
 
@@ -46,40 +130,65 @@ class ValidationReport:
         rows: object = (),
         hint: str = "",
     ) -> None:
+        """Append an issue; `rows` is capped at the first 20 indices."""
         idx = tuple(int(r) for r in list(rows)[:_MAX_ROWS])  # type: ignore[call-overload]
         self.issues.append(Issue(code, severity, message, group, idx, hint))
 
     @property
     def errors(self) -> list[Issue]:
+        """Issues with severity ``"error"``."""
         return [i for i in self.issues if i.severity == "error"]
 
     @property
     def warnings(self) -> list[Issue]:
+        """Issues with severity ``"warning"``."""
         return [i for i in self.issues if i.severity == "warning"]
 
     @property
     def ok(self) -> bool:
+        """True when there is no error (warnings allowed)."""
         return not self.errors
 
     def codes(self) -> list[str]:
+        """Return the code of every issue, in order (duplicates kept)."""
         return [i.code for i in self.issues]
 
     def to_text(self, errors_only: bool = False) -> str:
+        """Return the issues as text, one per line.
+
+        Parameters
+        ----------
+        errors_only : bool, default False
+            List errors only.
+
+        Returns
+        -------
+        str
+            ``"no issues"`` when there is nothing to list.
+        """
         items = self.errors if errors_only else self.issues
         return "\n".join(i.to_text() for i in items) or "no issues"
 
     def to_dataframe(self) -> pd.DataFrame:
+        """Return the issues as a table with the `Issue` fields as columns."""
         return pd.DataFrame(
             [i.__dict__ for i in self.issues],
             columns=["code", "severity", "message", "group", "row_indices", "hint"],
         )
 
     def raise_if_errors(self) -> None:
+        """Raise `InputValidationError` if there is any error.
+
+        Raises
+        ------
+        InputValidationError
+            If `ok` is False.
+        """
         if not self.ok:
             raise InputValidationError(self)
 
     def escalate(self) -> None:
-        """`strict=True`: every warning becomes an error."""
+        """Turn every warning into an error (used for ``strict=True``)."""
         self.issues = [
             Issue(i.code, "error", i.message, i.group, i.row_indices, i.hint)
             if i.severity == "warning"
@@ -91,10 +200,26 @@ class ValidationReport:
 def parse_timestamps(
     s: pd.Series, missing: pd.Series, *, dayfirst: bool = False
 ) -> tuple[pd.Series, list[int], list[int], list[int], list[int]]:
-    """Parse value by value. Returns (parsed, aware positions, naive positions,
-    unparseable positions, positions whose day/month order was guessed). Aware
-    values are converted to the offset of the first aware value, so clock times
-    stay local."""
+    """Parse timestamps one value at a time, never raising.
+
+    Parameters
+    ----------
+    s : pandas.Series
+        Timestamp strings.
+    missing : pandas.Series of bool
+        True where the value is missing (left as ``NaT``, not reported).
+    dayfirst : bool, default False
+        Passed to ``pd.to_datetime`` for ambiguous dates.
+
+    Returns
+    -------
+    parsed : pandas.Series
+        Parsed values. When all values are timezone-aware they are converted
+        to the offset of the first one, so clock times stay local.
+    aware, naive, bad, guessed : list of int
+        Positions of timezone-aware, naive and unparseable values, and of
+        values whose day/month order pandas had to guess.
+    """
     values: list[Any] = []
     aware: list[int] = []
     naive: list[int] = []
@@ -128,6 +253,7 @@ def parse_timestamps(
 
 
 def _closest(name: str, options: list[str]) -> list[str]:
+    """Up to three column names similar to `name`, for the E001 hint."""
     import difflib
 
     return difflib.get_close_matches(name, options, n=3, cutoff=0.4)
@@ -136,9 +262,30 @@ def _closest(name: str, options: list[str]) -> list[str]:
 def check_frame(
     raw: pd.DataFrame, columns: ColumnMap, config: AnalyzerConfig
 ) -> tuple[ValidationReport, pd.DataFrame | None]:
-    """Map columns, parse and clean. Returns the report and the canonical frame
-    (``group, username, timestamp, text, message_id?, row_index``), or None when
-    the input cannot be used at all."""
+    """Map columns, parse timestamps, clean rows and record every issue.
+
+    Parameters
+    ----------
+    raw : pandas.DataFrame
+        Raw input from `fgpd_analyzer.io.read_source`.
+    columns : ColumnMap
+        Explicit column mapping (unmapped columns are found by name).
+    config : AnalyzerConfig
+        Uses ``sort`` and ``dayfirst``.
+
+    Returns
+    -------
+    report : ValidationReport
+        Issues E001–E008, W001, W002, W005–W007, W015, I001 and I002. Role,
+        unit and eligibility issues are added later by
+        `fgpd_analyzer.preprocess.prepare`.
+    clean : pandas.DataFrame or None
+        Canonical table with ``group``, ``username``, ``timestamp``,
+        ``text``, optionally ``message_id``, and ``row_index`` (row in
+        `raw`); text columns normalized to NFC and stripped; empty and
+        duplicate rows dropped; sorted by group and time when ``sort=True``.
+        None when columns or timestamps make the input unusable.
+    """
     rep = ValidationReport()
     mapping, problems = columns.resolve(raw.columns)
     for canon, problem in problems:

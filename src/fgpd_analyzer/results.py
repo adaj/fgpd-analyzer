@@ -1,5 +1,11 @@
 """`FGPDResults`: the outputs of an analysis (DESIGN §10).
 
+The last stages of the pipeline (input → units → prompts → requests → runs →
+post-validation → consensus → **influence → outputs**). `FGPDResults` stores
+the internal tables produced by `fgpd_analyzer.analysis.run_analysis` and
+derives the public tables from them: patterns with location and agent
+influence, frequencies per group × goal, and time series.
+
 Everything except the model calls is recomputed from stored tables, so the
 influence lag, the influence rule and the time-series bin width can be changed
 on saved results without any API call.
@@ -20,6 +26,7 @@ import pandas as pd
 from .config import GOAL_LABELS, GOALS, parse_duration
 from .influence import UnitInfo, classify
 
+#: Columns holding lists: JSON strings in CSV, Arrow lists in parquet.
 LIST_COLUMNS = (
     "indicators",
     "evidence_ids",
@@ -30,6 +37,7 @@ LIST_COLUMNS = (
     "member_ids",
     "message_ids",
 )
+#: Status values of a group × goal, in category order.
 STATUSES = (
     "ok",
     "partial",
@@ -40,20 +48,135 @@ STATUSES = (
     "refused",
     "failed",
 )
+#: Statuses whose metrics are NA (no successful run).
 NA_STATUSES = ("insufficient_data", "too_long", "excluded", "not_selected", "refused", "failed")
 
 
 @dataclass
 class FGPDResults:
-    """Tables (no message text anywhere):
+    """Results of one analysis. No table contains message text.
 
-    - `frequencies` (a): one row per group × goal; `frequency` is the main metric;
-    - `timeseries(every=...)` (b): cumulative series derived from `patterns`;
-    - `patterns` (c): one row per consensus pattern, with location and agent influence;
-    - `unstable_patterns`, `run_patterns`: clusters below the support threshold, and
-      every run's validated patterns;
-    - `messages` (d): message ↔ unit ↔ row map;
-    - `run_metadata` (e): provenance, usage, cost, QC and stability.
+    Returned by `FGPDAnalyzer.analyze`, or read back with `load`. The public
+    tables are `frequencies`, `patterns`, `timeseries`, `unstable_patterns`,
+    `run_patterns`, `messages` and `run_metadata`; `patterns`, `frequencies`
+    and `timeseries` are derived from the stored tables on access, so
+    `with_influence` and `timeseries` need no API call. The only free text is
+    the model's pseudonymized ``justification``.
+
+    Status of a group × goal (``frequencies["status"]``): ``ok`` (every run
+    succeeded), ``partial`` (some runs failed, at least one succeeded),
+    ``insufficient_data``, ``too_long``, ``excluded`` (not eligible),
+    ``not_selected`` (eligible but left out by ``analyze(groups=...)``),
+    ``refused`` and ``failed`` (no run succeeded). Every status except ``ok``
+    and ``partial`` has NA metrics.
+
+    Parameters
+    ----------
+    units, groups, calls, consensus, unstable_patterns, run_patterns, messages : pandas.DataFrame
+        Stored tables (see Attributes).
+    run_metadata : dict
+        Provenance (see Attributes).
+    validation : dict, optional
+        Validation issues and per-group info.
+    influence_lag : datetime.timedelta, default 2 minutes
+        Lag used for `patterns`.
+    influence_rule : {"uptake", "temporal"}, default "uptake"
+        Rule used for `patterns`.
+    goals : tuple of str, default all four
+        Goals of the analysis.
+
+    Attributes
+    ----------
+    frequencies : pandas.DataFrame
+        One row per group × goal (DESIGN §10a). Columns: ``group``; ``goal``
+        and ``goal_label`` (category); ``status`` (category); ``frequency``
+        (Σ consensus ``score``, the main metric); ``count`` (consensus
+        patterns); ``count_strong`` (patterns with level ≥ 3); ``mean_score``
+        (frequency / count, NA if 0); ``rate_per_100`` (frequency per 100
+        student messages, secondary); ``n_student_messages``,
+        ``n_student_units``, ``n_agent_messages``, ``n_students``;
+        ``duration_min`` (minutes, last − first message); ``participation``
+        (share of the group's students in at least one evidence unit of this
+        goal); ``influenced_frequency`` and ``influenced_count`` (patterns
+        counted as influenced under the rule); ``uptake_count`` and
+        ``temporal_only_count``; ``freq_run_mean`` and ``freq_run_sd`` (over
+        the per-run Σ scores; SD NA with one run); ``n_runs_ok``;
+        ``n_unstable`` (clusters below the support threshold). Counts are
+        ``Int32``, metrics ``Float64``.
+    patterns : pandas.DataFrame
+        One row per consensus pattern (DESIGN §10c). Columns:
+        ``pattern_id`` (``{group}:{goal}:{k}``); ``group``, ``goal``,
+        ``goal_label``; ``level`` (1–4), ``score`` (level / 4),
+        ``level_min``, ``level_max`` (over runs); ``indicators``;
+        ``start_message_id`` / ``end_message_id`` (first message of the start
+        unit, last message of the end unit); ``start_unit_id`` /
+        ``end_unit_id``; ``start_ts`` / ``end_ts``; ``start_min`` /
+        ``end_min`` (minutes since the group's first message);
+        ``evidence_message_ids``, ``evidence_unit_ids``;
+        ``antecedent_unit_id``, ``antecedent_message_id``; ``speakers``
+        (pseudonyms of the evidence units) and ``n_speakers``;
+        ``justification``; ``agent_cited_unit_id`` /
+        ``agent_cited_message_id`` (the consensus citation, lag-free);
+        ``agent_influence`` (``uptake``, ``temporal_only``, ``none``);
+        ``agent_unit_id``, ``agent_message_id``, ``agent_lag_s`` (seconds),
+        ``agent_position`` (``before``, ``within``); ``influenced``;
+        ``support`` and ``n_runs_detected``; ``qc_flags``;
+        ``prompt_set_version``.
+    unstable_patterns : pandas.DataFrame
+        Clusters below ``consensus_min_support`` and clusters dropped while
+        re-validating the consensus; same columns as `consensus`. Not counted.
+    run_patterns : pandas.DataFrame
+        Every run's validated patterns: ``run_pattern_id``, ``group``,
+        ``goal``, ``run_idx``, ``k``, ``start_id``, ``end_id``,
+        ``evidence_ids``, ``antecedent_id``, ``indicators``, ``level``,
+        ``agent_uptake_id``, ``justification``, ``qc_flags``, ``source``.
+    messages : pandas.DataFrame
+        Message ↔ unit ↔ input-row map (DESIGN §10d): ``group``,
+        ``row_index``, ``message_id``, ``unit_id``, ``seq``, ``speaker``,
+        ``is_agent``, ``timestamp``, ``t_min``.
+    run_metadata : dict
+        Provenance (DESIGN §10e): ``package_version``, ``schema_version``,
+        ``run_id``, ``started_at`` / ``finished_at`` (UTC), ``config``
+        (redacted) and ``config_fingerprint``, ``model``, ``effort``,
+        ``backend``, ``prompts`` (name, sha256, source),
+        ``prompt_set_version``, ``prompt_set_hash``, ``chat_hashes``,
+        ``schema_hashes``, ``input_sha256``, ``usage`` (per API attempt) and
+        ``usage_total`` (tokens), ``request_ids``, ``cache_keys``,
+        ``cost_usd`` (None unless the backend is ``anthropic`` and the model
+        is priced), ``price_table_version``, ``qc`` and ``consensus_qc``
+        (correction counts), ``no_dispersion``, ``stability`` (Fleiss' kappa
+        of evidence membership per goal), ``groups`` (eligibility and status
+        per goal), ``n_calls``, ``n_api_calls``, ``n_cached``; after
+        `with_influence` or `save`, also ``influence`` (``lag_s``, ``rule``).
+    validation : dict
+        ``{"issues": [...], "info": [...]}`` from the `ValidationReport`.
+    units : pandas.DataFrame
+        Internal: ``group``, ``unit_id``, ``order``, ``speaker``,
+        ``is_agent``, ``t_start``, ``t_end``, ``t_start_min``,
+        ``t_end_min``, ``message_ids``, ``n_messages``.
+    groups : pandas.DataFrame
+        Internal: one row per group with ``eligibility``, message and student
+        counts, ``duration_min``, ``agent_share``, ``flagged_agent_share``,
+        ``first_ts`` and ``chat_hash``.
+    calls : pandas.DataFrame
+        Internal: one row per group × goal × run with ``status`` (``ok``,
+        ``failed``, ``refused``), ``error``, ``attempts``, ``from_cache`` and
+        ``n_patterns``.
+    consensus : pandas.DataFrame
+        Internal: consensus patterns in unit ids, before location and
+        influence are added.
+    influence_lag : datetime.timedelta
+    influence_rule : str
+    goals : tuple of str
+
+    Examples
+    --------
+    >>> res = fa.analyze("chats.csv")  # doctest: +SKIP
+    >>> res.frequencies_wide()  # doctest: +SKIP
+    >>> res.timeseries(every="10min")  # doctest: +SKIP
+    >>> res.with_influence(lag="60s").frequencies  # doctest: +SKIP
+    >>> res.save("results/")  # doctest: +SKIP
+    >>> again = FGPDResults.load("results/")  # doctest: +SKIP
     """
 
     units: pd.DataFrame
@@ -71,6 +194,7 @@ class FGPDResults:
 
     # ------------------------------------------------------------- derived tables
     def __post_init__(self) -> None:
+        """Set up the lazy caches of the derived tables."""
         self._patterns: pd.DataFrame | None = None
         self._frequencies: pd.DataFrame | None = None
         # original username -> pseudonym per group; in memory only, never saved by default
@@ -78,6 +202,7 @@ class FGPDResults:
 
     @property
     def patterns(self) -> pd.DataFrame:
+        """Consensus patterns with location and agent influence (see the class Attributes)."""
         if self._patterns is None:
             self._patterns = _locate(
                 self.consensus, self.units, self.influence_lag, self.influence_rule
@@ -86,17 +211,55 @@ class FGPDResults:
 
     @property
     def frequencies(self) -> pd.DataFrame:
+        """One row per group × goal with the metrics (see the class Attributes)."""
         if self._frequencies is None:
             self._frequencies = _frequencies(self)
         return self._frequencies
 
     def frequencies_wide(self, value: str = "frequency") -> pd.DataFrame:
+        """Pivot one column of `frequencies` to groups × goals.
+
+        Parameters
+        ----------
+        value : str, default "frequency"
+            Any column of `frequencies`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Index ``group``, one column per goal.
+        """
         return self.frequencies.pivot(index="group", columns="goal", values=value)
 
     def with_influence(
         self, lag: str | int | timedelta | None = None, rule: str | None = None
     ) -> FGPDResults:
-        """Same results with another influence lag or rule. No API call."""
+        """Return the same results with another influence lag or rule. No API call.
+
+        The model's agent citations are lag-free, so `patterns`,
+        `frequencies` and `timeseries` can be recomputed for any lag.
+
+        Parameters
+        ----------
+        lag : str, int or datetime.timedelta, optional
+            New ``influence_lag`` in any `parse_duration` form; unchanged when
+            omitted.
+        rule : {"uptake", "temporal"}, optional
+            New ``influence_rule``; unchanged when omitted.
+
+        Returns
+        -------
+        FGPDResults
+            A new object sharing the stored tables; its metadata records the
+            lag (seconds) and rule under ``influence``.
+
+        Raises
+        ------
+        ConfigError
+            If `lag` cannot be parsed.
+        ValueError
+            If `rule` is not ``"uptake"`` or ``"temporal"``.
+        """
         new = FGPDResults(
             self.units,
             self.groups,
@@ -126,6 +289,42 @@ class FGPDResults:
         cumulative: bool = True,
         origin: Literal["group_start", "absolute"] = "group_start",
     ) -> pd.DataFrame:
+        """Return the time series of every group × goal, derived from `patterns`. No API call.
+
+        Bin *k* covers minutes ``(k·N, (k+1)·N]`` from the group's first
+        message, bin 0 also includes minute 0, and there are
+        ``ceil(duration / N)`` bins (at least 1). A pattern counts in the bin
+        that contains its end (``end_min``). The last bin of the cumulative
+        series equals `frequencies`.
+
+        Parameters
+        ----------
+        every : str, int or datetime.timedelta, default "5min"
+            Bin width N, in any `parse_duration` form; must be positive.
+        cumulative : bool, default True
+            If True, cumulative values (columns ending in ``_cum``, plus
+            ``rate_per_100_cum``); if False, per-bin increments (same names
+            without ``_cum``, no rate).
+        origin : {"group_start", "absolute"}, default "group_start"
+            Bins are always relative to each group's first message;
+            ``"absolute"`` adds a ``bin_end`` timestamp column.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per group × goal × bin with ``group``, ``goal``,
+            ``bin_index``, ``bin_start_min``, ``bin_end_min`` (minutes),
+            ``frequency_cum``, ``count_cum``, ``influenced_frequency_cum``,
+            ``student_messages_cum`` and ``rate_per_100_cum``. Group × goal
+            pairs with NA status have no rows.
+
+        Raises
+        ------
+        ConfigError
+            If `every` cannot be parsed.
+        ValueError
+            If `every` is zero.
+        """
         return _timeseries(self, parse_duration(every), cumulative, origin)
 
     # ------------------------------------------------------------- persistence
@@ -137,8 +336,41 @@ class FGPDResults:
         timeseries_every: tuple[str, ...] = ("5min",),
         include_pseudonym_map: bool = False,
     ) -> dict[str, Path]:
-        """Write every table. `include_pseudonym_map=True` also writes the map from real
-        usernames to pseudonyms (personal data: keep the folder private)."""
+        """Write every table, the metadata and the validation report to a directory.
+
+        Parameters
+        ----------
+        directory : str or pathlib.Path
+            Created if needed; existing files are overwritten.
+        format : {"csv", "parquet"}, default "csv"
+            Table format. In CSV, list columns are JSON strings; parquet
+            needs ``pyarrow``.
+        timeseries_every : tuple of str, default ("5min",)
+            Write one cumulative ``timeseries_<every>`` table per bin width.
+        include_pseudonym_map : bool, default False
+            Also write ``pseudonym_map.json`` (real username → pseudonym per
+            group). This is personal data: keep the directory private.
+
+        Returns
+        -------
+        dict of str to pathlib.Path
+            Table name → file: ``frequencies``, ``patterns``,
+            ``unstable_patterns``, ``run_patterns``, ``messages``, ``units``,
+            ``groups``, ``calls``, ``consensus``, ``timeseries_<every>``,
+            ``run_metadata`` (JSON), ``validation`` (JSON) and, if requested,
+            ``pseudonym_map``.
+
+        Raises
+        ------
+        ValueError
+            If `include_pseudonym_map` is True but the results hold no map
+            (maps are never loaded from disk).
+
+        Warns
+        -----
+        PrivacyWarning
+            When the pseudonym map is written.
+        """
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
         tables = {
@@ -193,6 +425,26 @@ class FGPDResults:
 
     @classmethod
     def load(cls, directory: str | Path) -> FGPDResults:
+        """Read results written by `save`.
+
+        Parameters
+        ----------
+        directory : str or pathlib.Path
+            A directory written by `save`. Parquet is used when
+            ``units.parquet`` exists, else CSV.
+
+        Returns
+        -------
+        FGPDResults
+            With the saved influence lag and rule. CSV columns are cast back
+            to their types; ids stay strings (e.g. ``007``). The pseudonym map
+            is never loaded.
+
+        Raises
+        ------
+        FileNotFoundError
+            If a stored table or JSON file is missing.
+        """
         d = Path(directory)
         fmt = "parquet" if (d / "units.parquet").exists() else "csv"
         t = {
@@ -230,6 +482,7 @@ class FGPDResults:
 
 
 def _write(df: pd.DataFrame, path: Path, fmt: str) -> None:
+    """Write one table; list columns become JSON strings (CSV) or lists (parquet)."""
     df = df.copy()
     if fmt == "csv":
         for c in df.columns:
@@ -247,6 +500,7 @@ def _write(df: pd.DataFrame, path: Path, fmt: str) -> None:
         df.to_parquet(path, index=False)
 
 
+#: Columns cast to nullable integers when reading CSV results.
 INT_COLUMNS = frozenset(
     [
         "order",
@@ -278,6 +532,7 @@ INT_COLUMNS = frozenset(
         "student_messages_cum",
     ]
 )
+#: Columns cast to nullable floats when reading CSV results.
 FLOAT_COLUMNS = frozenset(
     [
         "t_start_min",
@@ -304,6 +559,7 @@ FLOAT_COLUMNS = frozenset(
         "rate_per_100_cum",
     ]
 )
+#: Columns cast to nullable booleans when reading CSV results.
 BOOL_COLUMNS = frozenset(
     [
         "is_agent",
@@ -312,6 +568,7 @@ BOOL_COLUMNS = frozenset(
         "influenced",
     ]
 )
+#: Columns parsed as timestamps when reading CSV results.
 TIME_COLUMNS = frozenset(
     [
         "t_start",
@@ -326,6 +583,7 @@ TIME_COLUMNS = frozenset(
 
 
 def _read(path: Path, fmt: str) -> pd.DataFrame:
+    """Read one table and restore list, numeric, boolean and time columns."""
     if fmt != "csv":
         df = pd.read_parquet(path)
         for c in df.columns:
@@ -353,6 +611,7 @@ def _read(path: Path, fmt: str) -> pd.DataFrame:
 
 
 def _unit_infos(units: pd.DataFrame) -> dict[str, dict[str, UnitInfo]]:
+    """Group → unit id → `UnitInfo`, from the ``units`` table."""
     out: dict[str, dict[str, UnitInfo]] = {}
     for r in units.itertuples(index=False):
         out.setdefault(str(r.group), {})[str(r.unit_id)] = UnitInfo(
@@ -366,6 +625,7 @@ def _unit_infos(units: pd.DataFrame) -> dict[str, dict[str, UnitInfo]]:
     return out
 
 
+#: Columns of the public ``patterns`` table, in order.
 PATTERN_COLUMNS = [
     "pattern_id",
     "group",
@@ -409,6 +669,7 @@ PATTERN_COLUMNS = [
 def _locate(
     consensus: pd.DataFrame, units: pd.DataFrame, lag: timedelta, rule: str
 ) -> pd.DataFrame:
+    """Build the ``patterns`` table: locate consensus patterns and classify influence."""
     if consensus.empty:
         return pd.DataFrame(columns=PATTERN_COLUMNS)
     infos = _unit_infos(units)
@@ -485,6 +746,23 @@ def _locate(
 def group_goal_status(
     calls: pd.DataFrame, groups: pd.DataFrame, goals: tuple[str, ...]
 ) -> dict[tuple[str, str], str]:
+    """Return the status of every group × goal.
+
+    Parameters
+    ----------
+    calls : pandas.DataFrame
+        The ``calls`` table.
+    groups : pandas.DataFrame
+        The ``groups`` table.
+    goals : tuple of str
+
+    Returns
+    -------
+    dict of (str, str) to str
+        The eligibility for ineligible groups; else ``not_selected`` (no
+        call), ``ok`` (all runs ok), ``partial`` (some ok), ``refused`` (none
+        ok, at least one refused) or ``failed``.
+    """
     status: dict[tuple[str, str], str] = {}
     for g in groups.itertuples(index=False):
         for goal in goals:
@@ -508,6 +786,7 @@ def group_goal_status(
 
 
 def _frequencies(res: FGPDResults) -> pd.DataFrame:
+    """Build the ``frequencies`` table."""
     pats = res.patterns
     status = group_goal_status(res.calls, res.groups, res.goals)
     students = res.units[~res.units["is_agent"].astype(bool)]
@@ -631,6 +910,7 @@ def _frequencies(res: FGPDResults) -> pd.DataFrame:
 
 
 def _timeseries(res: FGPDResults, every: timedelta, cumulative: bool, origin: str) -> pd.DataFrame:
+    """Build the time-series table (see `FGPDResults.timeseries`)."""
     n_min = every.total_seconds() / 60
     if n_min <= 0:
         raise ValueError("every must be positive")

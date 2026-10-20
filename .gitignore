@@ -15,3 +15,4 @@ data/
 results/
 .env
 *.jsonl
+docs/sphinx/_build/

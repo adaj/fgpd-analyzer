@@ -1,4 +1,9 @@
-"""Human coding workbook (DESIGN §12): export and read back.
+"""Human coding workbook (DESIGN §12): export, read back and check.
+
+A side branch of the pipeline for human–model agreement studies: it takes
+prepared input (after the units stage) and produces an Excel workbook with the
+same units the model sees; a filled workbook is read back and checked with the
+same post-validation rules as the model output, in report-only mode.
 
 The workbook shows exactly the units the model sees. Coders fill one sheet per
 goal with the same fields as the model's output schema.
@@ -17,6 +22,7 @@ from .config import GOAL_LABELS, GOALS
 from .exceptions import ConfigError
 from .pipeline import PreparedInput
 
+#: Fields of a goal form sheet, matching the model's output schema.
 FORM_COLUMNS: tuple[str, ...] = (
     "start_id",
     "end_id",
@@ -38,8 +44,33 @@ def export_coding_sheet(
     prompt_set_hash: str = "",
     coder: str = "",
 ) -> Path:
-    """One workbook per call. With several groups, the transcript and forms carry a
-    `group` column; for a coding study, export one workbook per group."""
+    """Write one coding workbook.
+
+    Parameters
+    ----------
+    prep : PreparedInput
+    path : pathlib.Path
+        Output ``.xlsx`` file; parent directories are created.
+    groups : list of str, optional
+        Groups to include; all eligible groups when omitted. With several
+        groups the forms get a ``group`` column. For a coding study, export
+        one workbook per group.
+    prompt_set_hash : str, optional
+        Stored in the README sheet, to match coders to the codebook.
+    coder : str, optional
+        Stored in the README sheet.
+
+    Returns
+    -------
+    pathlib.Path
+
+    Raises
+    ------
+    KeyError
+        If a group is not in the input.
+    ConfigError
+        If ``openpyxl`` is not installed.
+    """
     try:
         from openpyxl.styles import Alignment
         from openpyxl.worksheet.datavalidation import DataValidation
@@ -106,19 +137,34 @@ def export_coding_sheet(
 
 
 def _first(value: Any) -> str | None:
+    """First unit id found in a cell, or None."""
     ids = _ids(value)
     return ids[0] if ids else None
 
 
 def _ids(value: Any) -> list[str]:
+    """All unit ids (``u`` + 3 or more digits) found in a cell, lower-cased."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return []
     return [m.group(0).lower() for m in _ID_RX.finditer(str(value))]
 
 
 def read_coding_sheet(path: Path) -> pd.DataFrame:
-    """Return the coded patterns as a long table: group, goal, and the form fields
-    parsed into lists and ints (`run_patterns` shape, coder = README coder)."""
+    """Read the coded patterns of a filled workbook.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        A workbook written by `export_coding_sheet` and filled by a coder.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per form row with ``group`` (filled automatically when the
+        workbook has one group), ``goal``, the form fields parsed into ids,
+        lists and ints, ``coder`` (from the README sheet) and ``sheet_row``
+        (row number in the spreadsheet).
+    """
     book = pd.read_excel(path, sheet_name=None, dtype=str)
     meta = dict(zip(book["README"]["field"], book["README"]["value"], strict=False))
     groups = [g.strip() for g in str(meta.get("groups", "")).split(",") if g.strip()]
@@ -157,8 +203,22 @@ def read_coding_sheet(path: Path) -> pd.DataFrame:
 
 
 def check_coding_sheet(prep: PreparedInput, path: Path) -> pd.DataFrame:
-    """Run the model's post-validation in report-only mode on a filled workbook.
-    Returns one row per flagged pattern (empty when everything is fine)."""
+    """Check a filled workbook with the model's post-validation, changing nothing.
+
+    Parameters
+    ----------
+    prep : PreparedInput
+        The same input the workbook was exported from.
+    path : pathlib.Path
+        The filled workbook.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per flagged pattern with ``group``, ``goal``, ``row``
+        (spreadsheet row) and ``problems`` (comma-separated QC flags, or
+        "missing or unknown group"). Empty when everything is fine.
+    """
     from .postprocess import QC, validate_patterns
 
     coded = read_coding_sheet(path)

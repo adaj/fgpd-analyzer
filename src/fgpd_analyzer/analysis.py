@@ -1,4 +1,13 @@
-"""Orchestration of one analysis: requests → runs → consensus → results."""
+"""Orchestration of one analysis, and the cost estimate.
+
+`run_analysis` drives the middle of the pipeline for prepared input (input →
+units → prompts → **requests → runs → post-validation → consensus** →
+influence → outputs): it builds one payload per chat and one job per group ×
+goal × run, runs them, builds the consensus per group × goal, computes
+stability, usage and cost, and packs everything into `FGPDResults` (where
+influence and the output tables are derived). `estimate` forecasts the cost
+of the same calls without any network.
+"""
 
 from __future__ import annotations
 
@@ -33,13 +42,21 @@ T = TypeVar("T")
 # Assumptions for the cost estimate (replaced by measured usage after a run).
 # Measured on the dev run (Haiku 5.5, effort=medium): p10 3.1k, median 8.6k, mean 9.2k,
 # p90 16k output tokens per call, mostly thinking (docs/decisions.md D40).
+#: Assumed output tokens per call for the low, mid and high estimate.
 EST_OUTPUT_TOKENS = (3000, 9000, 16000)  # low, mid, high per call
+#: Assumed uncached input tokens per call (the task instruction).
 EST_TAIL_TOKENS = 120
+#: Characters per token used for the cached prompt prefix.
 CHARS_PER_TOKEN = 3.2
 
 
 def run_coro(coro: Any) -> Any:
-    """asyncio.run that also works inside a running loop (e.g. Jupyter)."""
+    """Run a coroutine to completion, also inside a running event loop.
+
+    Without a running loop this is ``asyncio.run``. Inside one (e.g.
+    Jupyter) the coroutine runs in a new thread with its own loop, and its
+    result or exception is passed back.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -62,6 +79,30 @@ def run_coro(coro: Any) -> Any:
 
 @dataclass
 class CostEstimate:
+    """Cost forecast of an analysis, returned by `FGPDAnalyzer.estimate_cost`.
+
+    Attributes
+    ----------
+    per_group : pandas.DataFrame
+        One row per group with ``group``, ``prompt_tokens`` (estimated input
+        tokens per call), ``calls`` and ``usd_low``, ``usd_mid``, ``usd_high``.
+    n_calls : int
+        Total number of calls (groups × goals × runs).
+    usd_low, usd_mid, usd_high : float
+        Total cost in USD with 3,000 / 9,000 / 16,000 output tokens per call;
+        NaN when the model is not in the price table.
+    model : str
+        Model id.
+    price_table_version : str
+        Date of the price table.
+    notes : list of str
+        Assumptions behind the numbers.
+
+    Notes
+    -----
+    ``str(estimate)`` gives a one-line summary.
+    """
+
     per_group: pd.DataFrame
     n_calls: int
     usd_low: float
@@ -72,6 +113,7 @@ class CostEstimate:
     notes: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
+        """One line: number of calls, model, mid estimate and range in USD."""
         return (
             f"{self.n_calls} calls with {self.model}: about ${self.usd_mid:.3f} "
             f"(range ${self.usd_low:.3f}–${self.usd_high:.3f})"
@@ -81,6 +123,24 @@ class CostEstimate:
 def estimate(
     prep: PreparedInput, registry: PromptRegistry, config: AnalyzerConfig, groups: list[str]
 ) -> CostEstimate:
+    """Forecast the cost of analyzing `groups`. No network.
+
+    Parameters
+    ----------
+    prep : PreparedInput
+    registry : PromptRegistry
+    config : AnalyzerConfig
+        Uses ``model``, ``goals`` and ``n_runs``.
+    groups : list of str
+        Groups to include.
+
+    Returns
+    -------
+    CostEstimate
+        Per chat: one cache write of the prompt prefix, then cache reads for
+        the other ``len(goals) × n_runs − 1`` calls, each with
+        `EST_TAIL_TOKENS` uncached input and `EST_OUTPUT_TOKENS` output tokens.
+    """
     prefix_chars = len(cb.render_prompt(registry, "system", config)) + len(
         cb.render_codebook_block(registry, config)
     )
@@ -137,6 +197,7 @@ def estimate(
 
 
 def _units_table(pg: PreparedGroup) -> pd.DataFrame:
+    """Build the ``units`` table of one group (no text)."""
     msgs = pg.messages.set_index("message_id")
     t0 = pg.messages["timestamp"].iloc[0]
     rows = []
@@ -161,6 +222,7 @@ def _units_table(pg: PreparedGroup) -> pd.DataFrame:
 
 
 def _pattern_rows(pats: list[Pattern]) -> list[dict[str, Any]]:
+    """Build the rows of the ``run_patterns`` table."""
     return [
         {
             "run_pattern_id": p.run_pattern_id,
@@ -184,6 +246,7 @@ def _pattern_rows(pats: list[Pattern]) -> list[dict[str, Any]]:
 
 
 def _consensus_rows(cps: list[ConsensusPattern], version: str) -> list[dict[str, Any]]:
+    """Build the rows of the ``consensus`` / ``unstable_patterns`` tables, numbered from 0."""
     rows = []
     for k, cp in enumerate(cps):
         p = cp.pattern
@@ -212,6 +275,7 @@ def _consensus_rows(cps: list[ConsensusPattern], version: str) -> list[dict[str,
     return rows
 
 
+#: Columns of the internal ``consensus`` and the ``unstable_patterns`` tables.
 CONSENSUS_COLUMNS = [
     "group",
     "goal",
@@ -232,6 +296,7 @@ CONSENSUS_COLUMNS = [
     "member_ids",
     "prompt_set_version",
 ]
+#: Columns of the ``run_patterns`` table.
 RUN_COLUMNS = [
     "run_pattern_id",
     "group",
@@ -262,6 +327,31 @@ async def run_analysis(
     source_sha256: str = "",
     package_version: str = "",
 ) -> FGPDResults:
+    """Run every call for the selected groups and build the results.
+
+    Parameters
+    ----------
+    prep : PreparedInput
+        Validated input without errors.
+    groups : list of str
+        Eligible groups to analyze; other groups appear in the results with
+        their eligibility or ``not_selected`` status.
+    registry : PromptRegistry
+    config : AnalyzerConfig
+    backend : LLMBackend
+        Closed (``aclose``) after the calls.
+    cache : ResponseCache or None
+    source_sha256 : str, optional
+        Hash of the input, stored as ``input_sha256``.
+    package_version : str, optional
+        Stored in the run metadata.
+
+    Returns
+    -------
+    FGPDResults
+        Holds the in-memory pseudonym map, which `FGPDResults.save` writes
+        only on request.
+    """
     started = datetime.now(timezone.utc)
     prompt_hash = cb.prompt_set_hash(registry, config, SCHEMA_VERSION)
     version = registry.version()
@@ -457,6 +547,11 @@ async def run_analysis(
 
 
 def sha256_of_source(source: Any) -> str:
+    """Return the SHA-256 of the input file's bytes or of a DataFrame's contents.
+
+    An empty string when the source is neither an existing path nor a
+    DataFrame.
+    """
     try:
         from pathlib import Path
 

@@ -1,4 +1,9 @@
-"""Pseudonymization (DESIGN §2.3).
+"""Pseudonymization of speakers and message text (DESIGN §2.3).
+
+Part of the units stage of the pipeline (input → validation → **units** →
+prompts → requests → ...): `fgpd_analyzer.preprocess` fits one `Pseudonymizer`
+per group and applies it to every message before units are built, so neither
+the model nor the outputs see real usernames.
 
 Students become S1..Sk and agents AG1..AGm, in order of first appearance in the
 group. Names are replaced inside message text with word boundaries, ignoring
@@ -25,23 +30,59 @@ from dataclasses import dataclass, field
 
 
 def _fold_char(c: str) -> str:
+    """Lower-case one character and strip its accent, keeping one character."""
     base = unicodedata.normalize("NFD", c)[0]
     low = base.lower()
     return low if len(low) == 1 else base
 
 
 def fold(text: str) -> str:
-    """Lower-case, accent-free copy with exactly one output char per input char,
-    so that match positions in the folded text are valid in the original.
-    Callers pass NFC text (validation normalizes every column)."""
+    """Return a lower-case, accent-free copy of `text` of the same length.
+
+    Exactly one output character per input character, so that match
+    positions in the folded text are valid in the original. Callers pass NFC
+    text (validation normalizes every column).
+
+    Parameters
+    ----------
+    text : str
+        NFC-normalized text.
+
+    Returns
+    -------
+    str
+    """
     return "".join(_fold_char(c) for c in text)
 
 
 @dataclass
 class Pseudonymizer:
-    """Builds the name -> pseudonym map of one group and rewrites text.
+    """Build the name → pseudonym map of one group and rewrite text with it.
 
-    Subclass and override `pseudonym_for` to use other labels.
+    Call `fit` once with the group's usernames, then call the instance on each
+    text. Subclass and override `pseudonym_for` to use other labels.
+
+    Attributes
+    ----------
+    min_len : int, default 3
+        Names shorter than this are not replaced inside text.
+    extra_names : tuple of str
+        Other known names; they become ``N1``, ``N2``, ....
+    mapping : dict of str to str
+        Username → pseudonym, filled by `fit`.
+    skipped_short : set of str
+        Names not replaced in text because they are shorter than `min_len`.
+    prefixes : tuple of (str, str)
+        Student and agent prefixes: ``("S", "AG")``, or ``("ST", "AGT")`` /
+        ``("STU", "AGENT")`` when usernames already look like pseudonyms.
+    collision : bool
+        True when the default prefixes could not be used (W014).
+    fuzzy : bool, default True
+        Also replace names with one extra or one missing letter.
+    fuzzy_min_len : int, default 5
+        Minimum word length for fuzzy matching.
+    fuzzy_hits : int
+        Number of fuzzy replacements made so far (W017).
     """
 
     min_len: int = 3
@@ -59,6 +100,7 @@ class Pseudonymizer:
     _dels: dict[str, str] = field(default_factory=dict)
 
     def pseudonym_for(self, kind: str, index: int) -> str:
+        """Return the pseudonym of the `index`-th (1-based) ``"student"`` or ``"agent"``."""
         return f"{self.prefixes[0]}{index}" if kind == "student" else f"{self.prefixes[1]}{index}"
 
     def fit(
@@ -68,9 +110,25 @@ class Pseudonymizer:
         other_names: Iterable[str] = (),
         aliases: dict[str, str] | None = None,
     ) -> Pseudonymizer:
-        """`other_names`: participants of other groups; mentions of them in this
-        group's text become ``[NAME]``. `aliases`: real name -> username (the
-        researcher's name key)."""
+        """Build the replacement table of one group.
+
+        Parameters
+        ----------
+        usernames : iterable of str
+            Usernames of the group's messages, in chat order (repeats allowed).
+        is_agent : iterable of bool
+            Role of each entry of `usernames`.
+        other_names : iterable of str, optional
+            Participants of other groups and other unknown names; mentions
+            of them in this group's text become ``[NAME]``.
+        aliases : dict of str to str, optional
+            Researcher's name key, real name → username.
+
+        Returns
+        -------
+        Pseudonymizer
+            `self`, fitted.
+        """
         names = list(usernames)
         agents = list(is_agent)
         for cand in (("S", "AG"), ("ST", "AGT"), ("STU", "AGENT")):
@@ -133,6 +191,7 @@ class Pseudonymizer:
         return self
 
     def _add_aliases(self, targets: dict[str, str], aliases: dict[str, str]) -> None:
+        """Add the full names and unambiguous name parts of the name key."""
         full: dict[str, str] = {}
         parts: dict[str, set[str]] = {}
         for real, username in aliases.items():
@@ -156,6 +215,7 @@ class Pseudonymizer:
                 targets[t] = pseudos.pop() if len(pseudos) == 1 else "[NAME]"
 
     def _add_target(self, targets: dict[str, str], name: str, pseudo: str) -> None:
+        """Add one name unless it is shorter than `min_len`; the first mapping wins."""
         name = name.strip()
         if len(name) < self.min_len:
             self.skipped_short.add(name)
@@ -163,6 +223,7 @@ class Pseudonymizer:
         targets.setdefault(fold(name), pseudo)
 
     def __call__(self, text: str) -> str:
+        """Return `text` with every known name replaced (word boundaries, any case/accents)."""
         if self._rx is None or not text:
             return text
         text = unicodedata.normalize("NFC", text)
@@ -179,6 +240,7 @@ class Pseudonymizer:
         return result
 
     def _fuzzy(self, m: re.Match[str]) -> str:
+        """Replace a word that is a known name with one letter missing or added."""
         word = m.group(0)
         if len(word) < self.fuzzy_min_len or not word.isalpha():
             return word
@@ -196,4 +258,5 @@ class Pseudonymizer:
         return hit
 
     def speaker(self, username: str) -> str:
+        """Return the pseudonym of a username seen by `fit`."""
         return self.mapping[username]
