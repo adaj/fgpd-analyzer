@@ -193,3 +193,17 @@ Totals: 53 human vs 49 model patterns; summed frequency 30.0 vs 26.25; correlati
 ### Documentation from the thesis (2026-10-19)
 
 `docs/sphinx/fgpd.md` summarizes the FGPD construct, the two-axis view (Figure 5.1, shown on the README and docs home page), the earlier ConSent + pattern-mining measurement and the validity notes of de Araujo (2024, Chapters 3 and 5). The codebook header now carries the full Michaels & O'Connor (2015) and JCAL references (closes D19).
+
+### Run dev_v2 (revised codebook) vs blind-coder round 3 (2026-10-19)
+
+| Measure | v1 vs round 2 | v2 vs round 3 |
+|---|---|---|
+| Patterns (human / model) | 53 / 49 | 47 / 55 |
+| Summed frequency (human / model) | 30.0 / 26.25 | 26.0 / 28.5 |
+| Frequency correlation (8 chat × goal cells) | 0.76 | 0.84 |
+| Unit kappa, dyad G1–G4 | .89 .76 .81 .90 | .94 .69 .81 .90 |
+| Unit kappa, triad G1–G4 | 1.00 .71 .62 .47 | .86 .71 .62 .54 |
+| Cross-run stability (Fleiss) G1–G4 | .84 .76 .74 .75 | .84 .77 .69 .67 |
+| Cost | $0.385 | $0.397 |
+
+Reading: no clear gain. Frequency agreement rose, but cross-run stability of G3 and G4 fell, and with two chats every difference is within noise. Further revisions on these two chats would fit the codebook to them. Next: fix the rule conflicts found in round 3 (the brief-interruption and span-start rules can force overlapping spans of one goal; "one idea per G1 pattern" conflicts with G1 level 3, which needs ideas from two students), then a pilot with human coders on chats not used so far.
