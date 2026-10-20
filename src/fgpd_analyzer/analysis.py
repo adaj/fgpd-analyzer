@@ -31,7 +31,9 @@ from .schemas import SCHEMA_VERSION
 T = TypeVar("T")
 
 # Assumptions for the cost estimate (replaced by measured usage after a run).
-EST_OUTPUT_TOKENS = (1500, 2500, 4000)  # low, mid, high per call (mostly thinking)
+# Measured on the dev run (Haiku 5.5, effort=medium): p10 3.1k, median 8.6k, mean 9.2k,
+# p90 16k output tokens per call, mostly thinking (docs/decisions.md D40).
+EST_OUTPUT_TOKENS = (3000, 9000, 16000)  # low, mid, high per call
 EST_TAIL_TOKENS = 120
 CHARS_PER_TOKEN = 3.2
 

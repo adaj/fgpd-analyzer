@@ -26,7 +26,7 @@ from .prompts.registry import PromptRegistry
 from .request import ChatPayload, build_payload, build_request
 
 log = get_logger(__name__)
-MAX_TOKENS_CAP = 32000
+MAX_TOKENS_CAP = 64000
 CallStatus = Literal["ok", "failed", "refused"]
 
 

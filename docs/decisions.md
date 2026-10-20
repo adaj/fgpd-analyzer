@@ -161,3 +161,11 @@ Dev data with the key: 0 real names left in the transcripts (13 caught as agent 
 ## Dev data: Wizard of Oz (stated by Adelson, 2026-10-19)
 
 The dev chats come from a study in which one student in each group played the agent and had to use predefined phrases. Messages of that account are all treated as agent context, including the few the student typed freely.
+
+## M5: first real run on the dev data (2026-10-19)
+
+Run on Adelson's Mac (the Cowork VM's proxy blocks API calls with a user key): 6 groups × 4 goals × 3 runs, Haiku 5.5, effort medium, `name_map`, PT justifications.
+
+| # | Finding | Decision |
+|---|---|---|
+| D40 | Cost $0.385 against an estimate of $0.104. Output (mostly thinking) was 8.6k tokens per call at the median, mean 9.2k, p90 16k, against the 2.5k assumed; 6 of 72 calls hit `max_tokens=16000` and were retried at 32k. | Estimate now uses 3k / 9k / 16k output tokens; default `max_tokens` 32,000 and retry cap 64,000 (a cut-off call is paid and thrown away). Responses recorded with the old default replay with `max_tokens=16000`. An effort comparison (low vs medium) is the cost lever to test next. |

@@ -340,7 +340,7 @@ def test_runner_retries_and_statuses(prepared):
     mb = MockBackend(script=lambda r: next(seq))
     (res,) = _run(fa, pg, mb)
     assert res.status == "ok" and res.attempts == 2 and len(res.patterns) == 1
-    assert [c.max_tokens for c in mb.calls] == [16000, 32000]
+    assert [c.max_tokens for c in mb.calls] == [32000, 64000]
 
     seq2 = iter([_resp("", "refusal"), _resp("", "refusal")])
     (res,) = _run(fa, pg, MockBackend(script=lambda r: next(seq2)))
@@ -458,7 +458,7 @@ def test_anthropic_backend_http_retries(prepared):
     (res,) = _run(fa, pg, backend)
     assert res.status == "ok" and len(calls) == 4
     sent = json.loads(calls[-1].content)
-    assert "temperature" not in sent and sent["max_tokens"] == 32000
+    assert "temperature" not in sent and sent["max_tokens"] == 64000
     assert sent["output_config"]["effort"] == "medium"
     assert res.usage[-1]["cache_creation_input_tokens"] == 7
 
