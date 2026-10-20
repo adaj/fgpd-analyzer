@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-10-19)
+
+First release. Prompt set **v1** (frozen; `prompts/v1/MANIFEST.json`). Not yet validated against
+human coders: treat measures as exploratory until the human-coder pilot is reported.
+
+Highlights
+- One LLM call per goal over the whole chat; patterns located by span, levels 1–4, consensus over 3 runs.
+- Main metric `frequency` (Σ pattern scores), with rate per 100 student messages, duration and run-to-run SD.
+- Post-hoc agent influence (content uptake within a lag), recomputable without API calls.
+- Pseudonymization by default, name key with variants and one-letter typos, agent vocative redaction.
+- Human codebook generated from the prompts (EN canonical + PT translation), coding workbook and checker.
+- CLI and Python API; local response cache and bit-identical replay; Sphinx documentation with quick start.
+
+Development log
 
 - M0: package scaffold, CI, exceptions, redacting logger.
 - M1: input reading, column mapping, validation (§9), roles, Student Contribution Units, pseudonymization, transcript rendering, preview.

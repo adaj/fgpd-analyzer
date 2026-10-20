@@ -13,13 +13,14 @@ pedagogical agent's message was taken up.
 The model applies the same written codebook that human coders use (`docs/codebook.md`), so
 human–model agreement can be measured on identical units.
 
-> Status: 0.1 development version. The prompts have not yet been validated against human
-> coding. Do not use the numbers as findings before that study.
+> Status: **0.1.0** (prompt set v1, frozen). The prompts have not yet been validated against
+> human coders; treat the measures as exploratory until that pilot is reported.
+> Step-by-step guide: [docs/sphinx/quickstart.md](docs/sphinx/quickstart.md).
 
 ## Install
 
 ```bash
-pip install "fgpd-analyzer[xlsx,parquet] @ git+https://github.com/adaj/fgpd-analyzer"
+pip install "fgpd-analyzer[xlsx,parquet] @ git+https://github.com/adaj/fgpd-analyzer@v0.1.0"
 export ANTHROPIC_API_KEY=...        # only needed for real analyses
 ```
 

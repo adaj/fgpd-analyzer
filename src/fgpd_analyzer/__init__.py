@@ -24,7 +24,7 @@ from .exceptions import (
 )
 from .validation import Issue, ValidationReport
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 __all__ = [
     "GOALS",

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fgpd-analyzer"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "LLM-based measurement of the Four Goals for Productive Discussion (FGPD) in student group chats"
 readme = "README.md"
 requires-python = ">=3.10"
