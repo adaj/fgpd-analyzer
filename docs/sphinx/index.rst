@@ -1,6 +1,14 @@
 fgpd-analyzer
 =============
 
+.. figure:: _static/fgpd_quadrants.jpg
+   :width: 100%
+   :align: center
+   :alt: The four goals on two axes: reasoning level (medium, high) and mode of engagement (individual, joint).
+
+   The Four Goals for Productive Discussion across reasoning level and mode of engagement
+   (de Araujo, 2024, Figure 5.1). See :doc:`fgpd`.
+
 ``fgpd-analyzer`` measures the **Four Goals for Productive Discussion** (Michaels &
 O'Connor) in student group chats with a Claude model: G1 *share*, G2 *listen*,
 G3 *deepen* and G4 *engage*. For every group it finds where each goal is pursued,
@@ -90,4 +98,6 @@ repository.
    :maxdepth: 2
    :caption: Contents
 
+   fgpd
+   codebook
    api

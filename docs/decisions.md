@@ -189,3 +189,7 @@ Totals: 53 human vs 49 model patterns; summed frequency 30.0 vs 26.25; correlati
 | G3: chains across speakers; revision without a reason. | Level-4 warrant chains come from one student (cross-student building is G4); a revision without a stated reason is not G3. |
 | G4: responding to unreasoned opinions; "revised position". | An unreasoned ranking or opinion is a G1 idea; a reply is level 1 unless it gives a reason (then level 2). A revised or joint position = explicitly changing, narrowing, qualifying or combining positions, or both sides giving reasons for different positions. |
 | A peer's question about the agent's wording as antecedent. | Explicitly valid. |
+
+### Documentation from the thesis (2026-10-19)
+
+`docs/sphinx/fgpd.md` summarizes the FGPD construct, the two-axis view (Figure 5.1, shown on the README and docs home page), the earlier ConSent + pattern-mining measurement and the validity notes of de Araujo (2024, Chapters 3 and 5). The codebook header now carries the full Michaels & O'Connor (2015) and JCAL references (closes D19).

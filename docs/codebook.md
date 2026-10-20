@@ -10,7 +10,7 @@
 
 This codebook is generated from the same prompt files that the model receives. Sections 2 to 7 are those prompts, word for word. Sections 1 and 8 to 11 only explain how to fill in the coding workbook; they never add or change a rule. Agreement between human and model codes is valid only when both used the codebook with the hash above.
 
-References: Michaels, S., & O'Connor, C. Conceptualizing talk moves as tools: Professional development approaches for academically productive discussions (pp. 333–349; full reference to be confirmed). de Araujo, A., et al. (2024). *Journal of Computer Assisted Learning*, 40, 2700–2714.
+References: Michaels, S., & O'Connor, C. (2015). Conceptualizing talk moves as tools: Professional development approaches for academically productive discussions. In L. B. Resnick, C. Asterhan, & S. N. Clarke (Eds.), *Socializing intelligence through academic talk and dialogue* (pp. 333–347). AERA. de Araujo, A., Papadopoulos, P. M., McKenney, S., & de Jong, T. (2024). A learning analytics-based collaborative conversational agent to foster productive dialogue in inquiry learning. *Journal of Computer Assisted Learning*, 40, 2700–2714. https://doi.org/10.1111/jcal.13007. Background on the construct: `docs/sphinx/fgpd.md`.
 
 ## 0. Instructions given to the model
 

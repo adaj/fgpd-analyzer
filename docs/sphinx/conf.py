@@ -49,4 +49,5 @@ napoleon_use_ivar = True
 napoleon_use_rtype = False
 
 html_theme = "furo"
+html_static_path = ["_static"]
 html_title = f"fgpd-analyzer {release}"

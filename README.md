@@ -1,5 +1,10 @@
 # fgpd-analyzer
 
+<p align="center">
+  <img src="docs/sphinx/_static/fgpd_quadrants.jpg" alt="The four goals on two axes: reasoning level (medium, high) and mode of engagement (individual, joint). Goal 1 sharing thoughts, Goal 2 orienting and listening, Goal 3 deepening the reasoning, Goal 4 engaging with each other's reasoning." width="100%">
+</p>
+<p align="center"><em>The Four Goals for Productive Discussion across reasoning level and mode of engagement (de Araujo, 2024, Figure 5.1). Background, prior measurement and validity notes: <a href="docs/sphinx/fgpd.md">docs/sphinx/fgpd.md</a>.</em></p>
+
 Measures the **Four Goals for Productive Discussion** (Michaels & O'Connor) in student group
 chats with a Claude model: G1 *share*, G2 *listen*, G3 *deepen*, G4 *engage*. For every group
 it finds where each goal is pursued, how fully (levels 1–4, score = level/4), and whether a
