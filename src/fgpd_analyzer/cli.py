@@ -247,8 +247,12 @@ def timeseries(
     from .results import FGPDResults
 
     ts = FGPDResults.load(results).timeseries(every)
-    path = out or results / f"timeseries_{every.replace(' ', '')}.csv"
-    ts.to_csv(path, index=False)
+    fmt = "parquet" if (results / "units.parquet").exists() else "csv"
+    path = out or results / f"timeseries_{every.replace(' ', '')}.{fmt}"
+    if str(path).endswith(".parquet"):
+        ts.to_parquet(path, index=False)
+    else:
+        ts.to_csv(path, index=False)
     typer.echo(f"wrote {path}")
 
 

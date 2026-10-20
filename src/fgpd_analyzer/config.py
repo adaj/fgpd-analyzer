@@ -118,6 +118,9 @@ _FINGERPRINT_FIELDS = (
     "agent_pattern",
     "agent_pattern_regex",
     "extra_agent_patterns",
+    "redact_vocatives",
+    "dayfirst",
+    "sort",
 )
 
 

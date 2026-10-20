@@ -47,7 +47,7 @@ EST_OUTPUT_TOKENS = (3000, 9000, 16000)  # low, mid, high per call
 #: Assumed uncached input tokens per call (the task instruction).
 EST_TAIL_TOKENS = 120
 #: Characters per token used for the cached prompt prefix.
-CHARS_PER_TOKEN = 3.2
+from .preprocess import CHARS_PER_TOKEN  # noqa: E402  (one estimator for the package)
 
 
 def run_coro(coro: Any) -> Any:

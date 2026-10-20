@@ -206,8 +206,8 @@ output_config: {format: json_schema(patterns_v1 for this chat), effort: cfg.effo
 | `api_key` | `None` → `$ANTHROPIC_API_KEY` | – | `SecretStr` |
 | `backend` | `"anthropic"` | key | `anthropic`, `mock`, `replay` |
 | `effort` | `"medium"` | key | `low`, `medium`, `high` |
-| `max_tokens` | 16000 | key | |
-| `timeout_s` / `max_retries` | 120 / 5 | – | |
+| `max_tokens` | 32000 | key | raised from 16000 after the dev run (decisions D40) |
+| `timeout_s` / `max_retries` | 300 / 5 | – | per-request timeout (decisions D22) |
 | `max_concurrency` | 4 | – | plus optional `requests_per_minute` |
 | `agent_pattern` | `"agent"` | – | case-insensitive substring (U3) |
 | `agent_pattern_regex` | `False` | – | |

@@ -169,3 +169,11 @@ Run on Adelson's Mac (the Cowork VM's proxy blocks API calls with a user key): 6
 | # | Finding | Decision |
 |---|---|---|
 | D40 | Cost $0.385 against an estimate of $0.104. Output (mostly thinking) was 8.6k tokens per call at the median, mean 9.2k, p90 16k, against the 2.5k assumed; 6 of 72 calls hit `max_tokens=16000` and were retried at 32k. | Estimate now uses 3k / 9k / 16k output tokens; default `max_tokens` 32,000 and retry cap 64,000 (a cut-off call is paid and thrown away). Responses recorded with the old default replay with `max_tokens=16000`. An effort comparison (low vs medium) is the cost lever to test next. |
+
+### Docs pass (Sphinx-ready docstrings) and follow-ups
+
+NumPy-style docstrings on the whole public API, pydocstyle in ruff, Sphinx skeleton in `docs/sphinx/` (`pip install -e ".[docs]"`; `sphinx-build -b html docs/sphinx docs/sphinx/_build`). Points the docs agent raised, fixed: `redact_vocatives`, `dayfirst` and `sort` enter the config fingerprint; one character-per-token estimator; `fgpd timeseries` keeps the results' format; design §6 defaults synced with the code. Still open (v0.2): `export_codebook(format, language)` from design §7, and `analyze(dry_run=True)` returning a dict rather than a typed object.
+
+### Blind coder, round 2 (current codebook, same 2 chats)
+
+Totals: 53 human vs 49 model patterns; summed frequency 30.0 vs 26.25; correlation of the 8 chat × goal frequencies 0.76. Unit-membership kappa 0.89/0.76/0.81/0.90 (dyad G1–G4) and 1.00/0.71/0.62/0.47 (triad). Matched patterns differ by at most one level. The human splits G1 into more patterns than the model. Remaining ambiguities (segmentation of threads, cross-speaker warrant chains in G3, "both directions" in G2 triads, "revised position" in G4 level 4) are the input for the M6 codebook revision. These are development numbers (2 chats, an agent as coder), not validation.
