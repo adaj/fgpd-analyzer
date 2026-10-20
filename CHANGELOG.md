@@ -14,6 +14,7 @@ Highlights
 - CLI and Python API; local response cache and bit-identical replay; Sphinx documentation with quick start.
 
 Development log
+- Codebook translated into Brazilian Portuguese (`docs/codebook.pt.md`, auxiliary; English prevails).
 
 - M0: package scaffold, CI, exceptions, redacting logger.
 - M1: input reading, column mapping, validation (§9), roles, Student Contribution Units, pseudonymization, transcript rendering, preview.

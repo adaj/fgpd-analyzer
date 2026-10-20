@@ -21,8 +21,9 @@ units.
 
 .. note::
 
-   Status: 0.1 development version. The prompts have not yet been validated
-   against human coding. Do not use the numbers as findings before that study.
+   Status: 0.1.0 (prompt set v1, frozen). The prompts have not yet been
+   validated against human coders; treat the measures as exploratory until that
+   pilot is reported. Start with :doc:`quickstart`.
 
 Install
 -------
@@ -98,6 +99,8 @@ repository.
    :maxdepth: 2
    :caption: Contents
 
+   quickstart
    fgpd
    codebook
+   codebook_pt
    api
