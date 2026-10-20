@@ -177,3 +177,15 @@ NumPy-style docstrings on the whole public API, pydocstyle in ruff, Sphinx skele
 ### Blind coder, round 2 (current codebook, same 2 chats)
 
 Totals: 53 human vs 49 model patterns; summed frequency 30.0 vs 26.25; correlation of the 8 chat × goal frequencies 0.76. Unit-membership kappa 0.89/0.76/0.81/0.90 (dyad G1–G4) and 1.00/0.71/0.62/0.47 (triad). Matched patterns differ by at most one level. The human splits G1 into more patterns than the model. Remaining ambiguities (segmentation of threads, cross-speaker warrant chains in G3, "both directions" in G2 triads, "revised position" in G4 level 4) are the input for the M6 codebook revision. These are development numbers (2 chats, an agent as coder), not validation.
+
+### Codebook revision after blind-coder round 2 (2026-10-19)
+
+| Ambiguity | Change |
+|---|---|
+| Strict segmentation produced one-unit fragments; an answer separated by one unit broke the thread. | A brief interruption (≤ 2 units on something else) does not close a pattern; a pattern closes when another idea runs for 3+ units. "One idea" is defined (a claim, proposal, interpretation or question with its elaboration, justification and replies). |
+| Where a span starts. | At the agent or peer unit the first evidence responds to (antecedent included), when it is at most two units before; otherwise at the first evidence unit. |
+| G1: unrequested clarification; what is a request; distinct ideas. | Unrequested clarification or an example inside the same unit counts at level 2; a request is any question asking to say more, explain, give an example or clarify (agent's "o que mais você acrescentaria?" included); "on request" needs a later unit; each distinct idea starts its own G1 pattern. |
+| G2 "both directions" in triads. | At least two students each take up the other's content; any pair counts. |
+| G3: chains across speakers; revision without a reason. | Level-4 warrant chains come from one student (cross-student building is G4); a revision without a stated reason is not G3. |
+| G4: responding to unreasoned opinions; "revised position". | An unreasoned ranking or opinion is a G1 idea; a reply is level 1 unless it gives a reason (then level 2). A revised or joint position = explicitly changing, narrowing, qualifying or combining positions, or both sides giving reasons for different positions. |
+| A peer's question about the agent's wording as antecedent. | Explicitly valid. |
