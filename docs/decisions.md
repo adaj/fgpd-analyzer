@@ -207,3 +207,12 @@ Totals: 53 human vs 49 model patterns; summed frequency 30.0 vs 26.25; correlati
 | Cost | $0.385 | $0.397 |
 
 Reading: no clear gain. Frequency agreement rose, but cross-run stability of G3 and G4 fell, and with two chats every difference is within noise. Further revisions on these two chats would fit the codebook to them. Next: fix the rule conflicts found in round 3 (the brief-interruption and span-start rules can force overlapping spans of one goal; "one idea per G1 pattern" conflicts with G1 level 3, which needs ideas from two students), then a pilot with human coders on chats not used so far.
+
+### Rule conflicts resolved; prompt set v1 frozen (2026-10-19)
+
+| Conflict (blind-coder round 3) | Resolution |
+|---|---|
+| The brief-interruption and span-start rules could force two patterns of one goal to overlap. | "No overlap" takes precedence over every segmentation rule. The span starts at the opening agent/peer unit only if that unit is not inside the previous pattern of the same goal. A unit that is evidence for the same goal about another idea is never a "brief interruption": it ends the current pattern. |
+| "Each distinct idea starts its own G1 pattern" vs G1 level 3/4, which need ideas from two students. | A G1 pattern covers one question or topic and the own ideas students share about it; competing answers to the same question belong to one idea/pattern. |
+
+Decision (Adelson): stop revising the codebook on the dev chats. Prompt set **v1 is frozen** (`prompts/v1/MANIFEST.json`, checked by a test); any later change goes to a new prompt set `v2` with a CHANGELOG entry. Next evidence comes from a human-coder pilot on chats not used so far.

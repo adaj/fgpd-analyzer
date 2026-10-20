@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "frozen": "2026-10-19",
+  "prompts": {
+    "system": "d89967178f3c6b20d307ce5929b31457b7c17ff7798ae0ee060ceea510b6ee45",
+    "codebook_general": "1de6388a18b7e3d4abf1088e3f99f4b6949795aa053f40426c3093a62dd5a200",
+    "chat_conventions": "e2d748a0ff92181d664b452603488c8db9a2a4e7a75ec3c2904f688fe8bcef50",
+    "goal_G1": "bd79c3073f27d8ab8555b4163070b835dac55b7098ab33d51560376f41a6b3e0",
+    "goal_G2": "914671b584b67e17d8414fecc145a2505308feb774af8635f29d15166b8db44a",
+    "goal_G3": "75a9ad4813421514aa365c379a6bfad3049ed1a9d7b9c67f090a86db0d4fc81b",
+    "goal_G4": "4b301811f837aea00fa7cd29e9ab78779dc18a875d1cc3bb37a137482e44b5e3",
+    "task_detect": "5b1ecd081ff095972a018e7e9237e0675b50f8c8f6cfa258f79c37c907f4be74"
+  }
+}

@@ -144,3 +144,17 @@ def test_coding_sheet_roundtrip(tmp_path, small_chat):
     assert row["evidence_ids"] == ["u004"] and row["antecedent_id"] == "u002"
     assert row["indicators"] == ["rephrase", "content_reference"]
     assert row["agent_uptake_id"] is None and row["coder"] == "coder-A"
+
+
+def test_prompt_set_v1_is_frozen():
+    """v1 was frozen for the 0.1.0 release. Any change to a built-in prompt must go to a
+    new prompt set (prompts/v2) with a CHANGELOG entry, never edit v1 in place."""
+    import json
+    from importlib import resources
+
+    manifest = json.loads(
+        (resources.files("fgpd_analyzer.prompts") / "v1" / "MANIFEST.json").read_text()
+    )
+    reg = PromptRegistry()
+    changed = [n for n, sha in manifest["prompts"].items() if reg.get(n).sha256 != sha]
+    assert not changed, f"frozen prompt set v1 was edited: {changed}; create prompts/v2"
